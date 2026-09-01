@@ -1,0 +1,80 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "ZCOOL QingKe HuangYou", "Noto Sans SC", sans-serif;
+  --font-body: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono", "Noto Sans SC", ui-monospace, SFMono-Regular, monospace;
+
+  --color-ink-950: #0b1120;
+  --color-ink-900: #0e1526;
+  --color-ink-850: #111a30;
+  --color-ink-800: #16213c;
+  --color-ink-700: #1d2b4d;
+  --color-line: #223154;
+  --color-line-soft: #1a2745;
+  --color-paper: #e9eff9;
+  --color-dim: #8ca0c4;
+  --color-faint: #5a6c8f;
+  --color-amber: #ffb454;
+  --color-teal: #3ddcc0;
+  --color-sky: #7eb2ff;
+  --color-rose: #ff7e93;
+
+  --animate-blink: blink 1.1s steps(2, start) infinite;
+  --animate-scan: scan 8s linear infinite;
+  --animate-pulse-soft: pulse-soft 2.2s ease-in-out infinite;
+  --animate-rise: rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+@keyframes scan {
+  from { transform: translateY(-100%); }
+  to { transform: translateY(420%); }
+}
+
+@keyframes pulse-soft {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.82); }
+}
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: rgb(255 180 84 / 0.28);
+  color: #fdf6ec;
+}
+
+.bg-blueprint {
+  background-image:
+    linear-gradient(to right, rgb(126 178 255 / 0.055) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(126 178 255 / 0.055) 1px, transparent 1px);
+  background-size: 44px 44px;
+}
+
+.thin-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.thin-scroll::-webkit-scrollbar-thumb {
+  background: #2a3b63;
+  border-radius: 99px;
+}
+.thin-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
