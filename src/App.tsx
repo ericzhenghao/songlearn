@@ -51,7 +51,7 @@ const g2l = (g: GlobalSong): LibrarySong => ({
   lineCount: g.lines,
   mastered: [],
   addedAt: g.addedAt,
-  size: 0,
+  size: g.audioSize ?? 0,
   audioUrl: g.audioUrl ?? undefined,
   plays: g.plays,
   by: g.by,
@@ -194,6 +194,7 @@ export default function App() {
         plays: 0,
         audioUrl,
         audioMime: rec.mime || "audio/mpeg",
+        audioSize: f?.size ?? 0,
         by: loadNick(),
         addedAt: Date.now(),
       };

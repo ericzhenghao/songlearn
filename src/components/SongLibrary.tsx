@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import type { LibrarySong } from "../lib/library";
 import { langLabel } from "../lib/langs";
+import { LIB_SONG_CAP } from "../lib/globalLib";
 
 const fmtDur = (s: number) => {
   if (!s || !Number.isFinite(s)) return "--:--";
@@ -49,6 +50,13 @@ export default function SongLibrary({
   const fileRef = useRef<HTMLInputElement>(null);
   const cloudCount = songs.filter((s) => s.source === "cloud").length;
 
+  /* 容量账：索引按首数计（~250B/首，上限 400）；音频按永久直链总体积计（不设上限） */
+  const hostedBytes = songs.reduce((sum, s) => sum + (s.audioUrl ? s.size || 0 : 0), 0);
+  const capPct = Math.min(100, Math.round((cloudCount / LIB_SONG_CAP) * 100));
+  const nearCap = capPct >= 85;
+  const fmtBytes = (b: number) =>
+    b >= 1073741824 ? `${(b / 1073741824).toFixed(2)} GB` : b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : b > 0 ? `${Math.round(b / 1024)} KB` : "0";
+
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
     if (!s) return songs;
@@ -86,6 +94,32 @@ export default function SongLibrary({
               <path d="m3.5 3.5 7 7m0-7-7 7" strokeLinecap="round" />
             </svg>
           </button>
+        </div>
+
+        {/* 容量账本：索引按首数封顶，音频是永久直链不设上限 */}
+        <div className="border-b border-line-soft bg-ink-950/50 px-5 py-3">
+          <div className="flex items-baseline justify-between">
+            <span className="font-mono text-[10px] tracking-[0.22em] text-faint">共享库容量</span>
+            <span className={`font-mono text-[11px] ${nearCap ? "text-rose animate-pulse-soft" : "text-dim"}`}>
+              索引 <span className={nearCap ? "text-rose" : "text-amber"}>{cloudCount}</span> / {LIB_SONG_CAP} 首
+            </span>
+          </div>
+          <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-ink-700">
+            <div
+              className={`h-full rounded-full transition-all duration-700 ease-out ${
+                nearCap ? "bg-rose" : "bg-gradient-to-r from-amber via-sky to-teal"
+              }`}
+              style={{ width: `${Math.max(2, capPct)}%` }}
+            />
+          </div>
+          <div className="mt-1.5 flex items-center justify-between font-mono text-[10px] text-faint">
+            <span>
+              已托管音频 <span className="text-teal">{fmtBytes(hostedBytes)}</span>
+            </span>
+            <span title="索引只存引用（约 250B/首）；歌词与音频各自是 catbox 永久直链，体积不计入索引">
+              音频体积不设上限 · 单文件 ≤150MB
+            </span>
+          </div>
         </div>
 
         {/* 共享曲库：曲库链接 = 朋友圈入口，人人共享同一个库 */}

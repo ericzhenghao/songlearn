@@ -36,7 +36,15 @@ function openDB(): Promise<IDBDatabase> {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: "id" });
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      /* 申请持久存储：浏览器空间紧张时也不清掉曲库（尽力而为，部署环境下通常获批） */
+      try {
+        void navigator.storage?.persist?.();
+      } catch {
+        /* 不支持也无妨 */
+      }
+      resolve(req.result);
+    };
     req.onerror = () => reject(req.error);
   });
   return dbPromise;

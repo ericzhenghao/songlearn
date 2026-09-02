@@ -25,6 +25,8 @@ export type GlobalSong = {
   /** 音频永久直链 —— 朋友点开就能唱；null = 仅共享歌词+时间轴 */
   audioUrl: string | null;
   audioMime: string;
+  /** 音频字节数（容量统计用，索引里只多 ~8B） */
+  audioSize?: number;
   /** 累计学唱人次（全局热度） */
   plays: number;
   /** 上传者昵称 */
@@ -119,17 +121,26 @@ export async function readLib(bin: string): Promise<GlobalSong[]> {
 /** 读-改-写整库（小规模共享足够；冲突时随机退避重试一次） */
 async function writeLib(bin: string, songs: GlobalSong[]): Promise<void> {
   const body = JSON.stringify({ v: 1, songs } satisfies LibDoc);
+  let lastStatus = 0;
   for (let attempt = 0; attempt < 2; attempt++) {
-    const res = await fetch(`${NPOINT}/${encodeURIComponent(bin)}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body,
-      signal: timeoutSignal(9000),
-    });
-    if (res.ok) return;
+    try {
+      const res = await fetch(`${NPOINT}/${encodeURIComponent(bin)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+        signal: timeoutSignal(9000),
+      });
+      if (res.ok) return;
+      lastStatus = res.status;
+    } catch {
+      lastStatus = 0;
+    }
     await new Promise((r) => setTimeout(r, 300 + Math.random() * 500));
   }
-  throw new Error("写入库失败（网络或并发冲突），稍后会自动重试");
+  if (lastStatus >= 400 && lastStatus < 500) {
+    throw new Error(`索引已到免费上限（约 ${LIB_SONG_CAP} 首）：删掉一些旧歌，或新建一个曲库`);
+  }
+  throw new Error("写入库失败（网络波动），稍后会自动重试");
 }
 
 /* ---------------- 曲库条目操作 ---------------- */
@@ -153,8 +164,8 @@ export async function pushGlobal(bin: string, song: GlobalSong): Promise<GlobalS
   } else {
     songs.unshift(song);
   }
-  /* 索引只存引用（约 250B/首），免费额度可容纳 ~300 首；正文和音频都在 catbox 永久直链上 */
-  await writeLib(bin, songs.slice(0, 300));
+  /* 索引只存引用（约 250B/首），免费额度可容纳 ~400 首；正文和音频都在 catbox 永久直链上 */
+  await writeLib(bin, songs.slice(0, LIB_SONG_CAP));
   return songs;
 }
 
@@ -182,8 +193,11 @@ export async function removeGlobal(bin: string, id: string): Promise<GlobalSong[
 const CATBOX = "https://catbox.moe/user/api.php";
 const CATBOX_RE = /^https:\/\/files\.catbox\.moe\/\S+$/;
 
-/** 音频上限 60MB（猫箱单文件允许 200MB；常见 MP3 3–9MB，MV 视频也基本够） */
-export const MAX_AUDIO = 60 * 1024 * 1024;
+/** 单文件上限 150MB（猫箱允许 200MB；常见 MP3 3–9MB，1080P MV 通常 60–150MB） */
+export const MAX_AUDIO = 150 * 1024 * 1024;
+
+/** 索引容量：npoint 免费 bin 约 100KB，每首 ~250B → 约 400 首。音频/歌词正文不占这个额度 */
+export const LIB_SONG_CAP = 400;
 
 /** 上传小文本（.lrc 歌词文件）拿永久直链 */
 export async function hostText(text: string, name: string): Promise<string | null> {
