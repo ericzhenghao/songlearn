@@ -44,7 +44,9 @@ export type LibrarySong = Omit<SongRecord, "source"> & {
 
 export function loadBundled(): LibrarySong[] {
   try {
-    const arr = JSON.parse(seedRaw) as BundledEntry[];
+    const raw = JSON.parse(seedRaw) as BundledEntry[] | { songs?: BundledEntry[] };
+    /* 兼容两种格式：纯数组，或「导出曲库」生成的 {app, version, songs} 包装 */
+    const arr = Array.isArray(raw) ? raw : raw?.songs;
     if (!Array.isArray(arr)) return [];
     return arr
       .filter((e) => e && typeof e.title === "string" && typeof e.lrc === "string")

@@ -22,6 +22,13 @@ export default function SongLibrary({
   onDelete,
   onExport,
   onImport,
+  openingId,
+  libId,
+  libError,
+  creatingLib,
+  onCreateLib,
+  onCopyLink,
+  onRefreshLib,
 }: {
   open: boolean;
   onClose: () => void;
@@ -30,9 +37,17 @@ export default function SongLibrary({
   onDelete: (s: LibrarySong) => void;
   onExport: () => void;
   onImport: (f: File) => void;
+  openingId?: string | null;
+  libId?: string | null;
+  libError?: string | null;
+  creatingLib?: boolean;
+  onCreateLib?: () => void;
+  onCopyLink?: () => void;
+  onRefreshLib?: () => void;
 }) {
   const [q, setQ] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
+  const cloudCount = songs.filter((s) => s.source === "cloud").length;
 
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
@@ -71,6 +86,50 @@ export default function SongLibrary({
               <path d="m3.5 3.5 7 7m0-7-7 7" strokeLinecap="round" />
             </svg>
           </button>
+        </div>
+
+        {/* 共享曲库：曲库链接 = 朋友圈入口，人人共享同一个库 */}
+        <div className="border-b border-line-soft bg-gradient-to-r from-sky/8 to-transparent px-5 py-3">
+          {libId ? (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-teal animate-pulse-soft" />
+                <span className="font-mono text-[11px] text-paper">
+                  共享曲库已连接 · <span className="text-sky">{cloudCount}</span> 首云端歌曲
+                </span>
+                <button onClick={onRefreshLib} className="ml-auto font-mono text-[10px] text-faint transition-colors hover:text-sky" title="刷新云端列表">
+                  ↻ 刷新
+                </button>
+              </div>
+              <button
+                onClick={onCopyLink}
+                className="flex w-full items-center justify-center gap-2 rounded-md border border-sky/50 bg-sky/10 px-3 py-2.5 font-display text-sm text-sky transition-all hover:-translate-y-0.5 hover:bg-sky/20 hover:shadow-[0_10px_30px_-10px_rgba(126,178,255,0.5)]"
+              >
+                <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.6">
+                  <path d="M6.5 9.5 9.5 6.5M5 8 3.5 9.5a2.8 2.8 0 0 0 4 4L9 12M7 4l1.5-1.5a2.8 2.8 0 0 1 4 4L11 8" strokeLinecap="round" />
+                </svg>
+                复制曲库链接 · 发朋友圈
+              </button>
+              <p className="font-mono text-[10px] leading-relaxed text-faint">
+                任何人点开链接都进入这 {songs.length} 首的曲库；他们上传的歌也会自动进这个库（库 ID {libId.slice(0, 8)}…）
+              </p>
+              {libError && <p className="font-mono text-[10px] text-rose">{libError}</p>}
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-xs leading-relaxed text-dim">
+                现在的歌只存在<strong className="text-teal">你的浏览器</strong>里。建一个共享曲库（免费、免注册），
+                上传的歌自动同步进去，链接发给朋友就能一起攒这个库。
+              </p>
+              <button
+                onClick={onCreateLib}
+                disabled={creatingLib}
+                className="flex w-full items-center justify-center gap-2 rounded-md bg-sky px-3 py-2.5 font-display text-sm text-ink-950 transition-all enabled:hover:-translate-y-0.5 enabled:hover:shadow-[0_10px_30px_-10px_rgba(126,178,255,0.6)] disabled:opacity-50"
+              >
+                {creatingLib ? "创建中…" : "⊕ 创建共享曲库（免费 · 免注册）"}
+              </button>
+            </div>
+          )}
         </div>
 
         {/* 导出 / 导入 */}
@@ -160,6 +219,8 @@ export default function SongLibrary({
                           {s.artist}
                           {s.lang ? ` · ${langLabel(s.lang)}` : ""}
                           {` · ${fmtDur(s.duration)}`}
+                          {s.plays ? ` · ♪${s.plays}` : ""}
+                          {s.by ? ` · ${s.by} 上传` : ""}
                         </p>
                         <div className="mt-2 h-1 overflow-hidden rounded-full bg-ink-700">
                           <div className="h-full rounded-full bg-gradient-to-r from-amber to-teal transition-all" style={{ width: `${masteredPct}%` }} />
@@ -168,9 +229,10 @@ export default function SongLibrary({
                       <div className="flex shrink-0 flex-col gap-1.5">
                         <button
                           onClick={() => onOpen(s)}
-                          className="rounded-md bg-amber px-3 py-1.5 font-display text-xs text-ink-950 transition-all hover:scale-105 active:scale-95"
+                          disabled={openingId === s.id}
+                          className="rounded-md bg-amber px-3 py-1.5 font-display text-xs text-ink-950 transition-all enabled:hover:scale-105 enabled:active:scale-95 disabled:opacity-60"
                         >
-                          学唱
+                          {openingId === s.id ? "打开中…" : "学唱"}
                         </button>
                         <button
                           onClick={() => onDelete(s)}
