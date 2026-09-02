@@ -196,7 +196,8 @@ export default function SongLibrary({
             <ul className="space-y-2.5">
               {filtered.map((s) => {
                 const badge = SOURCE_BADGE[s.source];
-                const masteredPct = s.mastered.length && countLines(s.lrc) ? Math.round((s.mastered.length / countLines(s.lrc)) * 100) : 0;
+                const total = s.lineCount ?? countLines(s.lrc);
+                const masteredPct = s.mastered.length && total ? Math.round((s.mastered.length / total) * 100) : 0;
                 return (
                   <li
                     key={s.id}
@@ -209,8 +210,12 @@ export default function SongLibrary({
                           <span className={`shrink-0 rounded border px-1.5 py-px font-mono text-[9px] tracking-wider ${badge.cls}`} title={badge.hint}>
                             {badge.label}
                           </span>
-                          {!hasAudio(s) && (
-                            <span className="shrink-0 rounded border border-line px-1.5 py-px font-mono text-[9px] text-faint" title="内置曲库只带歌词；上传同名音频即可跟唱">
+                          {hasAudio(s) ? (
+                            <span className="shrink-0 rounded border border-teal/40 bg-teal/8 px-1.5 py-px font-mono text-[9px] text-teal" title="含音频，点开就能跟唱">
+                              ♪ 含音频
+                            </span>
+                          ) : (
+                            <span className="shrink-0 rounded border border-line px-1.5 py-px font-mono text-[9px] text-faint" title="只带歌词+时间轴；上传同名音频即可跟唱">
                               仅歌词
                             </span>
                           )}
@@ -253,7 +258,10 @@ export default function SongLibrary({
         <div className="border-t border-line-soft bg-ink-950/60 px-5 py-3">
           <p className="font-mono text-[10px] leading-relaxed text-faint">
             三层曲库：<span className="text-amber">内置</span>（随项目代码）· <span className="text-sky">云端</span>（共享）·{" "}
-            <span className="text-teal">本地</span>（你的缓存）。导出 JSON 写进 src/data/library.json，曲库就成了项目的一部分。
+            <span className="text-teal">本地</span>（你的缓存）。
+          </p>
+          <p className="mt-1 font-mono text-[10px] leading-relaxed text-faint">
+            云端容量：索引只存引用（约 250B/首，可容 ~300 首）；<span className="text-teal">歌词与音频各自存永久直链，不计入索引、不限量</span>。
           </p>
         </div>
       </aside>

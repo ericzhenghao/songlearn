@@ -35,6 +35,10 @@ export type LibrarySong = Omit<SongRecord, "source"> & {
   source: "bundled" | "cloud" | "local";
   audioInRepo?: string;
   audioUrl?: string;
+  /** 歌词全文的永久直链（云端条目正文存在这，打开时再拉） */
+  lrcUrl?: string | null;
+  /** 歌词行数（云端条目正文在直链上，用行数显示进度而不必拉全文） */
+  lineCount?: number;
   /** 共享曲库里的全局热度（学唱人次）与上传者 */
   plays?: number;
   by?: string;

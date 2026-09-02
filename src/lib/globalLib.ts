@@ -16,13 +16,17 @@ export type GlobalSong = {
   album?: string;
   lang: string | null;
   duration: number;
-  /** 对齐好的完整 LRC —— 曲库的核心资产 */
-  lrc: string;
-  /** 累计学唱人次（全局热度） */
-  plays: number;
-  /** catbox 音频直链；null = 仅共享歌词 */
+  /** 歌词行数（列表里显示学习进度用，不用拉全文） */
+  lines: number;
+  /** 旧版库把歌词内联在索引里；新版走 lrcUrl，读取时两者兼容 */
+  lrc?: string;
+  /** 对齐好的完整 LRC 的永久直链（.lrc 文本文件，几 KB） */
+  lrcUrl?: string | null;
+  /** 音频永久直链 —— 朋友点开就能唱；null = 仅共享歌词+时间轴 */
   audioUrl: string | null;
   audioMime: string;
+  /** 累计学唱人次（全局热度） */
+  plays: number;
   /** 上传者昵称 */
   by: string;
   addedAt: number;
@@ -142,12 +146,15 @@ export async function pushGlobal(bin: string, song: GlobalSong): Promise<GlobalS
     songs[idx] = {
       ...song,
       plays: old.plays,
-      audioUrl: song.audioUrl ?? old.audioUrl, // 新上传没带上音频就保留旧直链
+      /* 新上传没带上的部分保留旧直链（歌词/音频各自独立） */
+      lrcUrl: song.lrcUrl ?? old.lrcUrl,
+      audioUrl: song.audioUrl ?? old.audioUrl,
     };
   } else {
     songs.unshift(song);
   }
-  await writeLib(bin, songs.slice(0, 100)); // 免费额度约 100KB，封顶 100 首
+  /* 索引只存引用（约 250B/首），免费额度可容纳 ~300 首；正文和音频都在 catbox 永久直链上 */
+  await writeLib(bin, songs.slice(0, 300));
   return songs;
 }
 
@@ -170,34 +177,72 @@ export async function removeGlobal(bin: string, id: string): Promise<GlobalSong[
   return songs;
 }
 
-/* ---------------- 音频托管（catbox.moe 匿名上传，永久直链） ---------------- */
+/* ---------------- 内容托管（catbox.moe 匿名上传，永久直链） ---------------- */
 
-const MAX_AUDIO = 15 * 1024 * 1024; // 猫箱允许 200MB，这里克制一点加快上传
+const CATBOX = "https://catbox.moe/user/api.php";
+const CATBOX_RE = /^https:\/\/files\.catbox\.moe\/\S+$/;
 
-/** 上传音频拿永久直链；任何失败返回 null（歌词照样共享） */
-export async function hostAudio(blob: Blob, name: string): Promise<string | null> {
-  if (blob.size > MAX_AUDIO) return null;
+/** 音频上限 60MB（猫箱单文件允许 200MB；常见 MP3 3–9MB，MV 视频也基本够） */
+export const MAX_AUDIO = 60 * 1024 * 1024;
+
+/** 上传小文本（.lrc 歌词文件）拿永久直链 */
+export async function hostText(text: string, name: string): Promise<string | null> {
   try {
     const fd = new FormData();
     fd.append("reqtype", "fileupload");
-    fd.append("fileToUpload", blob, name);
-    const res = await fetch("https://catbox.moe/user/api.php", {
-      method: "POST",
-      body: fd,
-      signal: timeoutSignal(45000),
-    });
+    fd.append("fileToUpload", new Blob([text], { type: "text/plain" }), name);
+    const res = await fetch(CATBOX, { method: "POST", body: fd, signal: timeoutSignal(30000) });
     const url = (await res.text()).trim();
-    return /^https:\/\/files\.catbox\.moe\/\S+$/.test(url) ? url : null;
+    return CATBOX_RE.test(url) ? url : null;
   } catch {
     return null;
   }
 }
 
+/** 上传音频拿永久直链；带进度回调；超限或失败返回 null（降级为仅共享歌词） */
+export function hostAudio(
+  blob: Blob,
+  name: string,
+  onProgress?: (loaded: number, total: number) => void
+): Promise<string | null> {
+  if (blob.size > MAX_AUDIO) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const fd = new FormData();
+    fd.append("reqtype", "fileupload");
+    fd.append("fileToUpload", blob, name);
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", CATBOX);
+    xhr.timeout = 180000;
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress(e.loaded, e.total);
+    };
+    xhr.onload = () => {
+      const url = xhr.responseText.trim();
+      resolve(xhr.status === 200 && CATBOX_RE.test(url) ? url : null);
+    };
+    xhr.onerror = () => resolve(null);
+    xhr.ontimeout = () => resolve(null);
+    xhr.send(fd);
+  });
+}
+
 /** 从直链把音频拉回本地成 File（别人打开你的歌时） */
 export async function fetchAudio(url: string): Promise<File> {
-  const res = await fetch(url, { signal: timeoutSignal(60000) });
+  const res = await fetch(url, { signal: timeoutSignal(120000) });
   if (!res.ok) throw new Error(`音频下载失败（HTTP ${res.status}）`);
   const blob = await res.blob();
   const name = decodeURIComponent(url.split("/").pop() || "audio.mp3");
   return new File([blob], name, { type: blob.type || "audio/mpeg" });
+}
+
+/** 从直链拉歌词文本（索引里只存链接，正文在这） */
+export async function fetchText(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, { signal: timeoutSignal(20000) });
+    if (!res.ok) return null;
+    const t = await res.text();
+    return t.trim() ? t : null;
+  } catch {
+    return null;
+  }
 }

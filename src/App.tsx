@@ -14,10 +14,13 @@ import {
   bumpPlays,
   createLib,
   fetchAudio,
+  fetchText,
   hostAudio,
+  hostText,
   libLink,
   loadLib,
   loadNick,
+  MAX_AUDIO,
   pushGlobal,
   readLib,
   removeGlobal,
@@ -42,7 +45,10 @@ const g2l = (g: GlobalSong): LibrarySong => ({
   fileBlob: null,
   source: "cloud",
   duration: g.duration,
-  lrc: g.lrc,
+  /* 歌词正文在 catbox 直链上，打开歌曲时再拉；lineCount 让列表不拉全文也能显示进度 */
+  lrc: g.lrc ?? "",
+  lrcUrl: g.lrcUrl ?? null,
+  lineCount: g.lines,
   mastered: [],
   addedAt: g.addedAt,
   size: 0,
@@ -67,6 +73,7 @@ export default function App() {
   const [failReason, setFailReason] = useState<string | null>(null);
   const [recogNote, setRecogNote] = useState<string | null>(null);
   const [lyricPreview, setLyricPreview] = useState<string | null>(null);
+  const [shareMsg, setShareMsg] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
 
   /* ---------------- 语言 & token ---------------- */
@@ -144,13 +151,37 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mastered, currentId]);
 
-  /* ---------------- 共享曲库：上传后自动入库（别人上传的也进同一个库） ---------------- */
+  /* ---------------- 共享曲库：上传后自动入库（别人上传的也进同一个库） ----------------
+   * 歌词正文 → catbox 永久直链（.lrc 文件）；音频 → catbox 永久直链（带进度）；
+   * npoint 索引只存 {标题/歌手/两个直链/行数/热度}，约 250B/首，可容 ~300 首。
+   */
   async function shareToGlobal(rec: SongRecord, f: File | null) {
     const bin = libId;
     if (!bin) return;
+    const slug = (s: string) => s.toLowerCase().replace(/[^\w\u4e00-\u9fa5]+/g, "-").replace(/^-+|-+$/g, "");
+    const mb = (n: number) => `${(n / 1024 / 1024).toFixed(1)}MB`;
     try {
+      setShareMsg(`共享《${rec.title}》· 歌词写入永久存储…`);
+      const lrcUrl = await hostText(rec.lrc, `${slug(rec.title)}-${slug(rec.artist)}.lrc`);
+      if (!lrcUrl) {
+        setShareMsg(null);
+        showToast("共享库暂不可用（歌词上传失败），已存本地曲库");
+        return;
+      }
+
       let audioUrl: string | null = null;
-      if (f && f.size <= 15 * 1024 * 1024) audioUrl = await hostAudio(f, f.name);
+      if (f) {
+        if (f.size > MAX_AUDIO) {
+          setShareMsg(`共享《${rec.title}》· 音频 ${mb(f.size)} 超过 ${mb(MAX_AUDIO)}，改为仅共享歌词`);
+          await wait(900);
+        } else {
+          audioUrl = await hostAudio(f, f.name, (loaded, total) => {
+            setShareMsg(`共享《${rec.title}》· 音频上传 ${Math.round((loaded / total) * 100)}%（${mb(loaded)} / ${mb(total)}）`);
+          });
+        }
+      }
+
+      const lines = rec.lrc.split(/\r?\n/).filter((l) => /^\[\d{1,3}:\d{1,2}[.:,]\d{1,3}\]/.test(l.trim())).length;
       const g: GlobalSong = {
         id: rec.id,
         title: rec.title,
@@ -158,7 +189,8 @@ export default function App() {
         album: rec.album,
         lang: rec.lang,
         duration: rec.duration,
-        lrc: rec.lrc,
+        lines,
+        lrcUrl,
         plays: 0,
         audioUrl,
         audioMime: rec.mime || "audio/mpeg",
@@ -167,8 +199,14 @@ export default function App() {
       };
       const songs = await pushGlobal(bin, g);
       setGlobalSongs(songs.map(g2l));
-      showToast(`《${rec.title}》已同步到共享曲库${audioUrl ? "（含音频直链）" : "（仅歌词，音频超限时只共享歌词）"}`);
+      setShareMsg(null);
+      showToast(
+        audioUrl
+          ? `✓ 《${rec.title}》已共享：含音频直链，朋友点开就能唱`
+          : `✓ 《${rec.title}》已共享歌词+时间轴（朋友可配自己的音频学唱）`
+      );
     } catch {
+      setShareMsg(null);
       showToast("同步共享曲库失败（网络），歌曲已存进你的本地曲库");
     }
   }
@@ -405,6 +443,13 @@ export default function App() {
         showToast(`《${s.title}》暂时只有歌词 —— 上传同名音频即可学唱`);
         return;
       }
+      /* 歌词：本地内联优先，否则从永久直链拉全文 */
+      let lrcText = s.lrc && s.lrc.trim() ? s.lrc : null;
+      if (!lrcText && s.lrcUrl) lrcText = await fetchText(s.lrcUrl);
+      if (!lrcText) {
+        showToast(`《${s.title}》的歌词拉取失败，请重试`);
+        return;
+      }
       clock?.destroy?.();
       const mc = new MediaFileClock(f);
       setClock(mc);
@@ -412,7 +457,7 @@ export default function App() {
       setOnsets(null);
       setSong({ title: s.title, artist: s.artist, album: s.album, lang: s.lang ?? "", year: "" });
       setDetectedLang(s.lang);
-      setParsed(parseLRC(s.lrc));
+      setParsed(parseLRC(lrcText));
       setMastered(new Set(s.mastered ?? []));
       setAlignNote(null);
       setCurrentId(s.id);
@@ -535,6 +580,16 @@ export default function App() {
               </svg>
             </span>
             <span className="font-display text-sm text-paper">{toast}</span>
+          </div>
+        </div>
+      )}
+
+      {/* 共享进度浮标（上传音频到永久存储时显示） */}
+      {shareMsg && (
+        <div className="animate-rise fixed bottom-6 left-1/2 z-[60] w-max max-w-[92vw] -translate-x-1/2">
+          <div className="flex items-center gap-2.5 rounded-full border border-amber/50 bg-ink-900/95 px-5 py-2.5 shadow-[0_16px_50px_-12px_rgba(255,180,84,0.4)]">
+            <span className="h-2 w-2 shrink-0 rounded-full bg-amber animate-pulse-soft" />
+            <span className="font-mono text-xs text-amber">{shareMsg}</span>
           </div>
         </div>
       )}
