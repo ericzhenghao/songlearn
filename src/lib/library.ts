@@ -35,6 +35,9 @@ export type LibrarySong = Omit<SongRecord, "source"> & {
   source: "bundled" | "cloud" | "local";
   audioInRepo?: string;
   audioUrl?: string;
+  /** 共享曲库里的全局热度（学唱人次）与上传者 */
+  plays?: number;
+  by?: string;
 };
 
 /* ---------------- 内置曲库 ---------------- */
