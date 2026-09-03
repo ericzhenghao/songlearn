@@ -43,7 +43,41 @@ const NICK_KEY = "sl-nick";
 /** 部署者可预置库 ID（写进代码，所有部署默认进同一个库）；留空则由首位访问者一键创建 */
 export const DEFAULT_BIN = "";
 
-/* ---------------- 库的连接（localStorage + URL ?lib= 参数） ---------------- */
+/* ---------------- 安全存储：localStorage 被禁用时页面照样能开 ---------------- */
+/*
+ * 预览 iframe / 第三方上下文 / 隐私模式下，localStorage 可能同步抛 SecurityError。
+ * 一旦在首帧渲染里抛错，整个 React 树挂载失败 → 白屏（"预览打不开"）。
+ * 这里统一包一层：抛错就落到内存 Map，功能降级但页面必开。
+ */
+const mem = new Map<string, string>();
+
+export function lsGet(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return mem.get(key) ?? null;
+  }
+}
+
+export function lsSet(key: string, value: string): void {
+  mem.set(key, value);
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* 内存兜底 */
+  }
+}
+
+export function lsRemove(key: string): void {
+  mem.delete(key);
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    /* 忽略 */
+  }
+}
+
+/* ---------------- 库的连接（安全存储 + URL ?lib= 参数） ---------------- */
 
 export function libFromUrl(): string | null {
   try {
@@ -57,15 +91,15 @@ export function libFromUrl(): string | null {
 export function loadLib(): string | null {
   const fromUrl = libFromUrl();
   if (fromUrl) {
-    localStorage.setItem(LIB_KEY, fromUrl);
+    lsSet(LIB_KEY, fromUrl);
     return fromUrl;
   }
-  return localStorage.getItem(LIB_KEY) || DEFAULT_BIN || null;
+  return lsGet(LIB_KEY) || DEFAULT_BIN || null;
 }
 
 export function saveLib(bin: string | null): void {
-  if (bin) localStorage.setItem(LIB_KEY, bin);
-  else localStorage.removeItem(LIB_KEY);
+  if (bin) lsSet(LIB_KEY, bin);
+  else lsRemove(LIB_KEY);
 }
 
 /** 生成可分享的曲库链接 */
@@ -77,16 +111,16 @@ export function libLink(bin: string): string {
 /* ---------------- 昵称（上传者署名） ---------------- */
 
 export function loadNick(): string {
-  let n = localStorage.getItem(NICK_KEY);
+  let n = lsGet(NICK_KEY);
   if (!n) {
     n = `听友-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-    localStorage.setItem(NICK_KEY, n);
+    lsSet(NICK_KEY, n);
   }
   return n;
 }
 
 export function saveNick(n: string): void {
-  localStorage.setItem(NICK_KEY, n.trim() || loadNick());
+  lsSet(NICK_KEY, n.trim() || loadNick());
 }
 
 /* ---------------- npoint 读写 ---------------- */

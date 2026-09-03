@@ -20,6 +20,8 @@ import {
   libLink,
   loadLib,
   loadNick,
+  lsGet,
+  lsSet,
   MAX_AUDIO,
   pushGlobal,
   readLib,
@@ -80,21 +82,21 @@ export default function App() {
   const toastTimer = useRef<number | null>(null);
 
   /* ---------------- 语言 & token ---------------- */
-  const [nativeLang, setNativeLangState] = useState(() => localStorage.getItem("sl-native") || "zh-CN");
-  const [songLang, setSongLangState] = useState(() => localStorage.getItem("sl-song") || "auto");
+  const [nativeLang, setNativeLangState] = useState(() => lsGet("sl-native") || "zh-CN");
+  const [songLang, setSongLangState] = useState(() => lsGet("sl-song") || "auto");
   const [detectedLang, setDetectedLang] = useState<string | null>(null);
-  const [auddToken, setAuddTokenState] = useState(() => localStorage.getItem("sl-audd-token") || "");
+  const [auddToken, setAuddTokenState] = useState(() => lsGet("sl-audd-token") || "");
   const setNativeLang = (v: string) => {
     setNativeLangState(v);
-    localStorage.setItem("sl-native", v);
+    lsSet("sl-native", v);
   };
   const setSongLang = (v: string) => {
     setSongLangState(v);
-    localStorage.setItem("sl-song", v);
+    lsSet("sl-song", v);
   };
   const setAuddToken = (v: string) => {
     setAuddTokenState(v);
-    localStorage.setItem("sl-audd-token", v);
+    lsSet("sl-audd-token", v);
   };
   const toCode = NATIVE_LANGS.find((l) => l.code === nativeLang)?.short ?? "zh";
   const toLabel = NATIVE_LANGS.find((l) => l.code === nativeLang)?.label ?? "简体中文";
