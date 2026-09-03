@@ -75,6 +75,12 @@ export default function App() {
   const [recogNote, setRecogNote] = useState<string | null>(null);
   const [lyricPreview, setLyricPreview] = useState<string | null>(null);
   const [shareMsg, setShareMsg] = useState<string | null>(null);
+  const [isFallback, setIsFallback] = useState(false);
+  const [showTokenModal, setShowTokenModal] = useState(false);
+  const [tokenInput, setTokenInput] = useState("");
+  const [showManualModal, setShowManualModal] = useState(false);
+  const [manualTitle, setManualTitle] = useState("");
+  const [manualArtist, setManualArtist] = useState("");
   const toastTimer = useRef<number | null>(null);
 
   /* ---------------- 语言 & token ---------------- */
@@ -267,6 +273,7 @@ export default function App() {
       setAlignNote(`没检测到清晰句点：按歌长把 ${finalLines.length} 句歌词均匀排好`);
     }
     setParsed({ ...parsed0, lines: finalLines });
+    setIsFallback(false);
 
     /* 存档：本地 IndexedDB（含音频）+ 共享曲库（Supabase 元数据 + 存储音频直链） */
     const lrcText = exportLRC(hitTitle, hitArtist, album, finalLines);
@@ -310,6 +317,7 @@ export default function App() {
     setFailReason(null);
     setRecogNote(null);
     setLyricPreview(null);
+    setIsFallback(false);
     setFile(f);
     setStep(1);
     setStage("decode");
@@ -418,6 +426,7 @@ export default function App() {
     setDetectedLang(null);
     setMastered(new Set());
     setAlignNote(`跟读模式：按人声段 ${vs.toFixed(0)}s → ${ve.toFixed(0)}s 切成 ${n} 段`);
+    setIsFallback(true);
     setLibraryOpen(false);
     setStep(2);
     showToast("进入跟读模式：逐段听、逐段唱");
@@ -747,6 +756,49 @@ export default function App() {
                 </button>
               </div>
 
+              {isFallback && (
+                <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber/30 bg-amber/5 p-3">
+                  <span className="font-mono text-[11px] text-amber">未识别出歌词 · 可补填 token 后重试，或手动指定歌名</span>
+                  <button
+                    onClick={() => {
+                      setTokenInput(auddToken);
+                      setShowTokenModal(true);
+                    }}
+                    className="flex items-center gap-1.5 rounded-md border border-sky/50 bg-sky/10 px-3 py-1.5 font-mono text-[11px] text-sky transition-all hover:bg-sky/20"
+                  >
+                    <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.6">
+                      <circle cx="8" cy="8" r="6" />
+                      <path d="M8 5v3l2 1.5" strokeLinecap="round" />
+                    </svg>
+                    设置 audD Token
+                  </button>
+                  <button
+                    onClick={() => file && void runPipeline(file)}
+                    className="flex items-center gap-1.5 rounded-md border border-amber/50 bg-amber/10 px-3 py-1.5 font-mono text-[11px] text-amber transition-all hover:bg-amber/20"
+                  >
+                    <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.6">
+                      <path d="M2 8a6 6 0 0 1 10.5-4M14 8a6 6 0 0 1-10.5 4" strokeLinecap="round" />
+                      <path d="M13 2v3.5H9.5M3 14v-3.5h3.5" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                    重试识别
+                  </button>
+                  <button
+                    onClick={() => {
+                      setManualTitle(song?.title && song.title !== "跟唱练习" ? song.title : "");
+                      setManualArtist("");
+                      setShowManualModal(true);
+                    }}
+                    className="flex items-center gap-1.5 rounded-md border border-teal/50 bg-teal/10 px-3 py-1.5 font-mono text-[11px] text-teal transition-all hover:bg-teal/20"
+                  >
+                    <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.6">
+                      <path d="M3 3h10v10H3z" />
+                      <path d="M5 6h6M5 9h4" strokeLinecap="round" />
+                    </svg>
+                    手动指定歌名
+                  </button>
+                </div>
+              )}
+
               <LearnStep
                 clock={clock}
                 parsed={parsed}
@@ -792,6 +844,112 @@ export default function App() {
         onCopyLink={() => void handleCopyLink()}
         onRefreshLib={() => void refreshGlobal()}
       />
+
+      {/* audD Token 设置弹窗 */}
+      {showTokenModal && (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+          onClick={() => setShowTokenModal(false)}
+        >
+          <div
+            className="w-full max-w-md animate-rise rounded-xl border border-line bg-ink-900 p-5 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="font-display text-lg text-paper">设置 audD Token</h3>
+            <p className="mt-1.5 text-xs leading-relaxed text-dim">
+              听声识曲需要一枚免费 audD API token。
+              <br />
+              打开 <span className="text-sky">audd.io</span> 注册即送免费额度，复制 API token 粘贴到下方。
+            </p>
+            <input
+              value={tokenInput}
+              onChange={(e) => setTokenInput(e.target.value)}
+              placeholder="粘贴 audD API token（如 test_xxxxxxxxxx）"
+              className="mt-4 w-full rounded-md border border-line bg-ink-950 px-3 py-2.5 font-mono text-sm text-paper outline-none transition-colors placeholder:text-faint focus:border-amber/50"
+              autoFocus
+            />
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                onClick={() => setShowTokenModal(false)}
+                className="rounded-md border border-line px-4 py-2 font-mono text-[11px] text-dim transition-colors hover:border-line hover:text-paper"
+              >
+                取消
+              </button>
+              <button
+                onClick={() => {
+                  const v = tokenInput.trim();
+                  setAuddToken(v);
+                  setShowTokenModal(false);
+                  showToast(v ? "✓ token 已保存，点「重试识别」即可听声识曲" : "token 已清空");
+                }}
+                className="rounded-md bg-amber px-4 py-2 font-mono text-[11px] text-ink-950 transition-all hover:bg-amber/90"
+              >
+                保存
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 手动指定歌名弹窗 */}
+      {showManualModal && (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+          onClick={() => setShowManualModal(false)}
+        >
+          <div
+            className="w-full max-w-md animate-rise rounded-xl border border-line bg-ink-900 p-5 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="font-display text-lg text-paper">手动指定歌名</h3>
+            <p className="mt-1.5 text-xs leading-relaxed text-dim">
+              输入歌曲名和歌手，直接搜索在线歌词库并对齐时间轴。
+            </p>
+            <div className="mt-4 space-y-3">
+              <div>
+                <label className="mb-1 block font-mono text-[10px] tracking-widest text-faint">歌曲名 *</label>
+                <input
+                  value={manualTitle}
+                  onChange={(e) => setManualTitle(e.target.value)}
+                  placeholder="如：Despacito"
+                  className="w-full rounded-md border border-line bg-ink-950 px-3 py-2.5 font-mono text-sm text-paper outline-none transition-colors placeholder:text-faint focus:border-amber/50"
+                  autoFocus
+                />
+              </div>
+              <div>
+                <label className="mb-1 block font-mono text-[10px] tracking-widest text-faint">歌手（可选）</label>
+                <input
+                  value={manualArtist}
+                  onChange={(e) => setManualArtist(e.target.value)}
+                  placeholder="如：Luis Fonsi"
+                  className="w-full rounded-md border border-line bg-ink-950 px-3 py-2.5 font-mono text-sm text-paper outline-none transition-colors placeholder:text-faint focus:border-amber/50"
+                />
+              </div>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                onClick={() => setShowManualModal(false)}
+                className="rounded-md border border-line px-4 py-2 font-mono text-[11px] text-dim transition-colors hover:border-line hover:text-paper"
+              >
+                取消
+              </button>
+              <button
+                onClick={() => {
+                  if (!manualTitle.trim()) {
+                    showToast("请输入歌曲名");
+                    return;
+                  }
+                  setShowManualModal(false);
+                  void manualResolve(manualTitle.trim(), manualArtist.trim());
+                }}
+                className="rounded-md bg-teal px-4 py-2 font-mono text-[11px] text-ink-950 transition-all hover:bg-teal/90"
+              >
+                搜索歌词并对齐
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
