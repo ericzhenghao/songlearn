@@ -48,7 +48,7 @@ export function StepUpload({
             </select>
           </label>
           <label className="block">
-            <span className="mb-1.5 block font-display text-sm text-paper">歌曲语言（拿不准就自动检测）</span>
+            <span className="mb-1.5 block font-display text-sm text-paper">歌曲语言 · 按唱的选，别照歌名</span>
             <select
               value={songLang}
               onChange={(e) => onSong(e.target.value)}
@@ -64,6 +64,9 @@ export function StepUpload({
         </div>
         <p className="mt-3 font-mono text-[11px] text-dim">
           翻译方向：歌曲语言 → <span className="text-teal">{NATIVE_LANGS.find((l) => l.code === nativeLang)?.label}</span>
+        </p>
+        <p className="mt-1.5 font-mono text-[11px] leading-relaxed text-faint">
+          找歌词时按<span className="text-amber">演唱语言</span>为准，不照歌名——比如《Waka Waka》歌名是英文，但西语版就选 Español。
         </p>
 
         <button onClick={() => setShowEngine((v) => !v)} className="mt-3 font-mono text-[11px] text-faint underline-offset-2 transition-colors hover:text-amber hover:underline">

@@ -68,6 +68,9 @@ export default function App() {
   const [song, setSong] = useState<{ title: string; artist: string; album?: string; lang: string; year: string } | null>(null);
   const [parsed, setParsed] = useState<ParsedLRC | null>(null);
   const [alignNote, setAlignNote] = useState<string | null>(null);
+  /* 歌词实际语言 + 语言不一致告警（歌名是英文、唱的是西语这类情况） */
+  const [lyricLang, setLyricLang] = useState<string | null>(null);
+  const [lyricWarning, setLyricWarning] = useState<string | null>(null);
   const [mastered, setMastered] = useState<Set<number>>(new Set());
   const [toast, setToast] = useState<string | null>(null);
   const [failReason, setFailReason] = useState<string | null>(null);
@@ -305,6 +308,8 @@ export default function App() {
     setSong(null);
     setMastered(new Set());
     setAlignNote(null);
+    setLyricLang(null);
+    setLyricWarning(null);
     setFailReason(null);
     setRecogNote(null);
     setLyricPreview(null);
@@ -349,17 +354,27 @@ export default function App() {
       setRecogNote(result.detail);
       setStage("lyrics");
 
-      const foundLyrics = await fetchLyricsForRecognizedSong(result.title, result.artist, duration);
+      /* 演唱语言 = 用户在上传页声明的"内容语言"，优先于歌名（Waka Waka 歌名是英文、唱的是西语） */
+      const preferredLang = songLang === "auto" ? null : songLang;
+      const foundLyrics = await fetchLyricsForRecognizedSong(result.title, result.artist, duration, preferredLang);
       let lyricsText: string | null = null;
       if (foundLyrics) {
         lyricsText = foundLyrics.text;
+        setLyricLang(foundLyrics.matchedLang);
+        setLyricWarning(
+          foundLyrics.langMismatch
+            ? `没找到 ${langLabel(preferredLang)} 版歌词，先用《${foundLyrics.trackName}》（${langLabel(foundLyrics.matchedLang)}）。歌词语言和你选的演唱语言不一致，跟唱时请留意。`
+            : null
+        );
         setRecogNote(
-          `${result.detail} · 歌词来自 ${foundLyrics.via}${
+          `${result.detail} · 歌词《${foundLyrics.trackName}》（${langLabel(foundLyrics.matchedLang)}）· ${foundLyrics.via}${
             foundLyrics.synced ? "（带时间戳，对齐更准）" : "（纯文本，按人声段估算）"
           }`
         );
       } else if (result.lyrics) {
         lyricsText = result.lyrics;
+        setLyricLang(null);
+        setLyricWarning(null);
         setRecogNote(`${result.detail} · 在线歌词库未返回全文，用识别服务自带的歌词`);
       }
 
@@ -385,13 +400,20 @@ export default function App() {
     setRecogNote(`按你给的歌名「${title}${artist ? ` — ${artist}` : ""}」搜索歌词库…`);
     try {
       await wait(400);
-      const found = await fetchLyricsForRecognizedSong(title, artist || title, clock?.duration ?? 0);
+      const preferredLang = songLang === "auto" ? null : songLang;
+      const found = await fetchLyricsForRecognizedSong(title, artist || title, clock?.duration ?? 0, preferredLang);
       if (!found) {
         setFailReason(`歌词库没找到《${title}》的歌词。换个写法试试，或进跟读模式。`);
         setStage("failed");
         return;
       }
-      setRecogNote(`命中《${title}》${artist ? ` — ${artist}` : ""}（${found.via}），正在解析并对齐…`);
+      setLyricLang(found.matchedLang);
+      setLyricWarning(
+        found.langMismatch
+          ? `没找到 ${langLabel(preferredLang)} 版歌词，先用《${found.trackName}》（${langLabel(found.matchedLang)}）。歌词语言和演唱语言不一致，跟唱时请留意。`
+          : null
+      );
+      setRecogNote(`命中《${found.trackName}》（${langLabel(found.matchedLang)}）· ${found.via}，正在解析并对齐…`);
       const detected = detectLanguage(found.text) ?? null;
       await finalize(title, artist || "未知艺人", undefined, found.text, detected, file, clock?.duration ?? 0);
     } catch {
@@ -461,6 +483,8 @@ export default function App() {
       setParsed(parseLRC(lrcText));
       setMastered(new Set(s.mastered ?? []));
       setAlignNote(null);
+      setLyricLang(s.lang);
+      setLyricWarning(null);
       setCurrentId(s.id);
       setLibraryOpen(false);
       setStep(2);
@@ -556,6 +580,8 @@ export default function App() {
     setFailReason(null);
     setRecogNote(null);
     setLyricPreview(null);
+    setLyricLang(null);
+    setLyricWarning(null);
     setStep(0);
   };
 
@@ -712,6 +738,11 @@ export default function App() {
                     </p>
                   )}
                 </div>
+                {lyricLang && (
+                  <span className="shrink-0 rounded-md border border-sky/40 bg-sky/10 px-2.5 py-1 font-mono text-[11px] text-sky">
+                    歌词语言 · {langLabel(lyricLang)}
+                  </span>
+                )}
                 <button
                   onClick={resetAll}
                   className="ml-auto rounded-md border border-line px-3.5 py-2 font-mono text-[11px] text-dim transition-colors hover:border-amber/50 hover:text-amber"
@@ -719,6 +750,16 @@ export default function App() {
                   ← 换一首
                 </button>
               </div>
+
+              {/* 歌词语言与演唱语言不一致时的醒目提醒（歌名英文、唱西语这类） */}
+              {lyricWarning && (
+                <div className="animate-rise flex items-start gap-3 rounded-lg border border-rose/40 bg-rose/8 px-4 py-3">
+                  <svg viewBox="0 0 24 24" className="mt-0.5 h-4.5 w-4.5 shrink-0 text-rose" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 9v4m0 3.5h.01M10.3 3.9 1.9 18a2 2 0 0 0 1.7 3h16.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" />
+                  </svg>
+                  <p className="text-xs leading-relaxed text-rose/90">{lyricWarning}</p>
+                </div>
+              )}
 
               <LearnStep
                 clock={clock}
