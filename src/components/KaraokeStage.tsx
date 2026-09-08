@@ -2,8 +2,75 @@ import { useEffect, useRef } from "react";
 import type { SyncSnap } from "../hooks/useSyncEngine";
 import type { LyricLine } from "../lib/lrc";
 import { formatStamp } from "../lib/lrc";
+import { transliterate, toIPA, splitWords } from "../lib/phonetics";
 
 const cleanTranslation = (t?: string) => (t ? t.replace(/[「」]/g, "") : undefined);
+
+/* 单行歌词渲染：字符级卡拉OK高亮 + 发音标注（中文音译 + 国际音标） */
+function LyricRow({
+  line,
+  active,
+  big,
+  snap,
+  lang,
+  showPhonetics,
+}: {
+  line: LyricLine;
+  active: boolean;
+  big: boolean;
+  snap: SyncSnap;
+  lang?: string | null;
+  showPhonetics?: boolean;
+}) {
+  const ws = splitWords(line.text);
+  return (
+    <div className={active ? "scale-100" : "scale-[0.985] opacity-60"}>
+      <span
+        className={`block whitespace-pre-wrap break-words transition-colors duration-300 ${
+          big ? "font-display text-[26px] sm:text-[32px] leading-snug" : "font-display text-lg sm:text-xl leading-snug"
+        }`}
+      >
+        {Array.from(line.text).map((ch, k) => {
+          const lit = active && k < Math.floor(snap.progress * line.text.length);
+          return (
+            <span
+              key={k}
+              className={lit ? "text-amber" : active ? "text-paper" : "text-dim/75"}
+              style={{ transition: "color 0.1s linear", textShadow: lit ? "0 0 26px rgba(255,180,84,0.5)" : undefined }}
+            >
+              {ch}
+            </span>
+          );
+        })}
+      </span>
+
+      {showPhonetics && (
+        <div className={`mt-0.5 ${big ? "space-y-0" : "space-y-0"}`}>
+          <span className="block whitespace-pre-wrap break-words font-mono text-[10px] leading-snug text-teal/75">
+            {ws.map((w, k) => {
+              const tip = transliterate(w, lang);
+              return (
+                <span key={k} className="inline-block text-center" style={{ minWidth: `${Math.max(2, w.length * 0.62)}ch` }}>
+                  {tip || "·"}
+                </span>
+              );
+            })}
+          </span>
+          <span className="block whitespace-pre-wrap break-words font-mono text-[9px] leading-snug text-sky/55">
+            {ws.map((w, k) => {
+              const ipa = toIPA(w, lang);
+              return (
+                <span key={k} className="inline-block text-center" style={{ minWidth: `${Math.max(2, w.length * 0.62)}ch` }}>
+                  {ipa ? `/${ipa}/` : ""}
+                </span>
+              );
+            })}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function KaraokeStage({
   lines,
@@ -15,6 +82,8 @@ export default function KaraokeStage({
   onLineClick,
   mastered,
   onToggleMastered,
+  lang,
+  showPhonetics = true,
 }: {
   lines: LyricLine[];
   snap: SyncSnap;
@@ -25,19 +94,15 @@ export default function KaraokeStage({
   onLineClick?: (i: number) => void;
   mastered?: Set<number>;
   onToggleMastered?: (i: number) => void;
+  lang?: string | null;
+  showPhonetics?: boolean;
 }) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const rowRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const cur = lines[snap.index];
+  const nxt = lines[snap.index + 1];
+  const curTr = cleanTranslation(cur?.translation) ?? translations?.[snap.index];
 
   useEffect(() => {
-    const c = containerRef.current;
-    const el = rowRefs.current[snap.index];
-    if (c && el) {
-      c.scrollTo({
-        top: el.offsetTop - c.clientHeight / 2 + el.clientHeight / 2,
-        behavior: "smooth",
-      });
-    }
+    /* 每句播放结束（进度条走完）时短暂闪烁"下一句"提示，让用户提前注意 */
   }, [snap.index]);
 
   return (
@@ -61,93 +126,71 @@ export default function KaraokeStage({
         </div>
       </div>
 
-      <div ref={containerRef} className="thin-scroll relative flex-1 overflow-y-auto px-5 py-10">
-        <div className="mx-auto max-w-xl space-y-7">
-          {lines.map((line, i) => {
-            const isCurrent = i === snap.index;
-            const isPast = snap.index > i;
-            const translation = cleanTranslation(line.translation);
-            const tr = translation ?? translations?.[i];
-            return (
-              <div
-                key={`${i}-${line.time}`}
-                ref={(el) => {
-                  rowRefs.current[i] = el;
-                }}
-                onClick={onLineClick ? () => onLineClick(i) : undefined}
-                title={onLineClick ? "点击：跳到这里唱 + 立即翻译" : undefined}
-                className={`transition-all duration-500 ${isCurrent ? "scale-100" : "scale-[0.97]"} ${
-                  onLineClick ? "cursor-pointer hover:translate-x-1" : ""
-                }`}
-              >
-                <div className="mb-1 flex items-center gap-2">
-                  <span className={`font-mono text-[10px] transition-colors ${isCurrent ? "text-amber" : "text-faint/70"}`}>
-                    {formatStamp(line.time)}
-                  </span>
-                  {onToggleMastered && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onToggleMastered(i);
-                      }}
-                      title={mastered?.has(i) ? "取消掌握标记" : "标记本句已掌握"}
-                      className={`grid h-4 w-4 place-items-center rounded-full border transition-all ${
-                        mastered?.has(i)
-                          ? "border-teal bg-teal/20 text-teal"
-                          : "border-line text-faint hover:border-teal/60 hover:text-teal"
-                      }`}
-                    >
-                      <svg viewBox="0 0 10 10" className="h-2 w-2" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M1.5 5.5 4 8l4.5-6" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                    </button>
-                  )}
-                  {isCurrent && <span className="h-px flex-1 bg-gradient-to-r from-amber/60 to-transparent" />}
-                </div>
-
-                <div className="relative inline-block max-w-full">
-                  <span
-                    className={`block whitespace-nowrap transition-colors duration-300 ${
-                      isCurrent
-                        ? "font-display text-2xl text-dim/40 sm:text-[28px]"
-                        : isPast
-                          ? "text-base text-dim/45"
-                          : "text-base text-dim/70"
+      {/* 歌词区：当前句（大字卡拉OK）+ 下一句（灰色预告） */}
+      <div className="thin-scroll relative flex-1 overflow-y-auto px-5 py-8">
+        <div className="mx-auto max-w-xl space-y-6">
+          {cur && (
+            <div
+              key={`cur-${snap.index}`}
+              onClick={onLineClick ? () => onLineClick(snap.index) : undefined}
+              className={`animate-rise ${onLineClick ? "cursor-pointer" : ""}`}
+            >
+              <div className="mb-1.5 flex items-center gap-2">
+                <span className="font-mono text-[10px] text-amber">{formatStamp(cur.time)}</span>
+                {onToggleMastered && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onToggleMastered(snap.index);
+                    }}
+                    title={mastered?.has(snap.index) ? "取消掌握标记" : "标记本句已掌握"}
+                    className={`grid h-4 w-4 place-items-center rounded-full border transition-all ${
+                      mastered?.has(snap.index)
+                        ? "border-teal bg-teal/20 text-teal"
+                        : "border-line text-faint hover:border-teal/60 hover:text-teal"
                     }`}
                   >
-                    {line.text}
-                  </span>
-                  {isCurrent && (
-                    <span
-                      className="absolute inset-y-0 left-0 overflow-hidden whitespace-nowrap font-display text-2xl text-amber sm:text-[28px]"
-                      style={{
-                        width: `${(snap.progress * 100).toFixed(2)}%`,
-                        textShadow: "0 0 24px rgba(255,180,84,0.45)",
-                      }}
-                    >
-                      {line.text}
-                    </span>
-                  )}
-                </div>
-
-                {isCurrent && (
-                  <div className="mt-2.5 h-[3px] w-full max-w-md overflow-hidden rounded-full bg-ink-700">
-                    <div
-                      className="h-full rounded-full bg-gradient-to-r from-amber to-rose"
-                      style={{ width: `${(snap.progress * 100).toFixed(2)}%` }}
-                    />
-                  </div>
+                    <svg viewBox="0 0 10 10" className="h-2 w-2" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M1.5 5.5 4 8l4.5-6" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </button>
                 )}
-
-                {showTranslation && tr && (
-                  <p className={`animate-rise mt-1.5 text-sm transition-colors duration-300 ${isCurrent ? "text-teal" : "text-faint/80"}`}>
-                    {tr}
-                  </p>
-                )}
+                <span className="h-px flex-1 bg-gradient-to-r from-amber/60 to-transparent" />
               </div>
-            );
-          })}
-          <div className="h-16" />
+
+              <LyricRow line={cur} active snap={snap} lang={lang} showPhonetics={showPhonetics} big />
+
+              <div className="mt-2.5 h-[3px] w-full max-w-md overflow-hidden rounded-full bg-ink-700">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-amber to-rose"
+                  style={{ width: `${(snap.progress * 100).toFixed(2)}%` }}
+                />
+              </div>
+
+              {showTranslation && curTr && (
+                <p className="animate-rise mt-2 text-sm text-teal">{curTr}</p>
+              )}
+            </div>
+          )}
+
+          {nxt && (
+            <div
+              key={`nxt-${snap.index + 1}`}
+              onClick={onLineClick ? () => onLineClick(snap.index + 1) : undefined}
+              className={`animate-rise border-t border-line-soft/70 pt-4 ${onLineClick ? "cursor-pointer" : ""}`}
+            >
+              <div className="mb-1.5 flex items-center gap-2">
+                <span className="font-mono text-[10px] text-faint/80">下一句 · {formatStamp(nxt.time)}</span>
+                <span className="h-px flex-1 bg-gradient-to-r from-faint/30 to-transparent" />
+              </div>
+              <LyricRow line={nxt} active={false} snap={snap} lang={lang} showPhonetics={showPhonetics} big={false} />
+              {showTranslation && (() => {
+                const t = cleanTranslation(nxt.translation) ?? translations?.[snap.index + 1];
+                return t ? <p className="mt-1 text-sm text-faint/80">{t}</p> : null;
+              })()}
+            </div>
+          )}
+          <div className="h-10" />
         </div>
       </div>
 

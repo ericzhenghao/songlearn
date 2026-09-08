@@ -18,6 +18,12 @@ export type SongRecord = {
   duration: number;
   /** 对齐后的完整 LRC 文本 */
   lrc: string;
+  /** 词级对齐结果（Timings JSON 字符串）。LRC 文本格式不变——已发布的 .lrc 直链
+      是不可变的，词级数据必须单独存；缺失 = 只有句级时间轴，走旧启发式渲染 */
+  timings?: string;
+  /** 生成这份时间轴的对齐算法版本。老条目没有此字段 = 旧算法产物，
+      时间轴可能掉进前奏呼喊/间奏；打开时据此决定是否静默重跑对齐 */
+  alignV?: number;
   mastered: number[];
   addedAt: number;
   size: number;
@@ -89,7 +95,10 @@ export async function getSong(id: string): Promise<SongRecord | null> {
   });
 }
 
-export async function updateSong(id: string, patch: Partial<Pick<SongRecord, "mastered" | "lrc">>): Promise<void> {
+export async function updateSong(
+  id: string,
+  patch: Partial<Pick<SongRecord, "mastered" | "lrc" | "lang" | "alignV" | "timings">>
+): Promise<void> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const store = db.transaction(STORE, "readwrite").objectStore(STORE);

@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { NATIVE_LANGS, SONG_LANGS } from "../lib/langs";
+import { validateAudDToken } from "../lib/recognize";
 
 export function StepUpload({
   onFile,
@@ -22,6 +23,8 @@ export function StepUpload({
   const [drag, setDrag] = useState(false);
   const [showEngine, setShowEngine] = useState(false);
   const [tokenDraft, setTokenDraft] = useState(auddToken);
+  const [tokenChecking, setTokenChecking] = useState(false);
+  const [tokenErr, setTokenErr] = useState<string | null>(null);
 
   const pick = (f: File | undefined | null) => {
     if (f && (f.type.startsWith("audio") || f.type.startsWith("video"))) onFile(f);
@@ -80,17 +83,35 @@ export function StepUpload({
             <div className="flex gap-2">
               <input
                 value={tokenDraft}
-                onChange={(e) => setTokenDraft(e.target.value)}
+                onChange={(e) => {
+                  setTokenDraft(e.target.value);
+                  setTokenErr(null);
+                }}
                 placeholder="粘贴 audD token…"
                 className="min-w-0 flex-1 rounded-md border border-line bg-ink-950/80 px-3 py-2 font-mono text-xs text-paper outline-none transition-colors placeholder:text-faint/50 focus:border-amber/60"
               />
               <button
-                onClick={() => onToken(tokenDraft.trim())}
-                className="shrink-0 rounded-md border border-amber/50 bg-amber/10 px-4 py-2 font-display text-sm text-amber transition-all hover:-translate-y-0.5 hover:bg-amber/20"
+                onClick={async () => {
+                  const v = tokenDraft.trim();
+                  if (!v || tokenChecking) return;
+                  setTokenChecking(true);
+                  setTokenErr(null);
+                  const check = await validateAudDToken(v);
+                  setTokenChecking(false);
+                  if (check.ok) {
+                    onToken(v);
+                    setTokenDraft(v);
+                  } else {
+                    setTokenErr(check.message);
+                  }
+                }}
+                disabled={!tokenDraft.trim() || tokenChecking}
+                className="shrink-0 rounded-md border border-amber/50 bg-amber/10 px-4 py-2 font-display text-sm text-amber transition-all enabled:hover:-translate-y-0.5 enabled:hover:bg-amber/20 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                保存
+                {tokenChecking ? "验证中…" : "验证并保存"}
               </button>
             </div>
+            {tokenErr && <p className="font-mono text-[11px] leading-relaxed text-rose">✕ {tokenErr}</p>}
             <p className="font-mono text-[10px] text-faint">token 只存在你自己的浏览器里，不会上传。</p>
           </div>
         )}

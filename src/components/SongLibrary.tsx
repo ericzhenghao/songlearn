@@ -48,7 +48,7 @@ export default function SongLibrary({
 }) {
   const [q, setQ] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
-  const cloudCount = songs.filter((s) => s.source === "cloud").length;
+  const cloudCount = songs.filter((s) => s.cloudSource).length;
 
   /* 容量账：索引按首数计（~250B/首，上限 400）；音频按永久直链总体积计（不设上限） */
   const hostedBytes = songs.reduce((sum, s) => sum + (s.audioUrl ? s.size || 0 : 0), 0);
@@ -148,6 +148,14 @@ export default function SongLibrary({
                 任何人点开链接都进入这 {songs.length} 首的曲库；他们上传的歌也会自动进这个库（库 ID {libId.slice(0, 8)}…）
               </p>
               {libError && <p className="font-mono text-[10px] text-rose">{libError}</p>}
+              <button
+                onClick={onCreateLib}
+                disabled={creatingLib}
+                className="flex w-full items-center justify-center gap-1.5 rounded-md border border-dashed border-sky/40 px-3 py-2 font-mono text-[11px] text-sky/80 transition-all enabled:hover:-translate-y-0.5 enabled:hover:border-sky/70 enabled:hover:text-sky disabled:opacity-50"
+                title="另起一个独立曲库（不同链接 = 不同库，互不影响）"
+              >
+                {creatingLib ? "创建中…" : "⊕ 新建共享曲库（独立链接）"}
+              </button>
             </div>
           ) : (
             <div className="space-y-2">

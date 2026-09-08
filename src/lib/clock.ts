@@ -65,8 +65,16 @@ export class MediaFileClock implements Clock {
     return () => this.listeners.delete(cb);
   }
   destroy() {
+    const url = this.el.src;
     this.el.pause();
-    URL.revokeObjectURL(this.el.src);
+    /* 先让元素中止正在进行的取流，再回收 URL，避免控制台报 ERR_ABORTED */
+    this.el.removeAttribute("src");
+    try {
+      this.el.load();
+    } catch {
+      /* 个别浏览器对空 src 调 load 会抛错，忽略 */
+    }
+    if (url && url.startsWith("blob:")) URL.revokeObjectURL(url);
   }
 }
 

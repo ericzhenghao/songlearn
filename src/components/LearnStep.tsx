@@ -3,12 +3,46 @@ import { useSyncEngine } from "../hooks/useSyncEngine";
 import type { Clock } from "../lib/clock";
 import { translate } from "../lib/translate";
 import { formatTime, type ParsedLRC } from "../lib/lrc";
+import type { OnsetInfo } from "../lib/align";
 import KaraokeStage from "./KaraokeStage";
 
 const extractWords = (text: string) =>
   (text.toLowerCase().match(/[a-zà-ÿ'’]{3,}/g) || []).filter((w, i, arr) => arr.indexOf(w) === i);
 
-const RATES = [0.75, 1, 1.25];
+const RATES = [0.5, 0.75, 1, 1.25, 1.5];
+
+/* 单句精学的循环终点：只圈到「本句原唱人声结束」，把句尾伴奏排除在循环外。
+   优先级：词级 ASR（上传歌，最准）→ 卡拉OK双时间戳 sungEnd（校准唱完时刻）
+   → 声学人声段（仅当段明显跨过句首才可信）→ 退回下一句歌词开始。 */
+function lineLoopEnd(
+  i: number,
+  lines: ParsedLRC["lines"],
+  onsets: OnsetInfo | null | undefined,
+  duration: number
+): number {
+  const next = i + 1 < lines.length ? lines[i + 1].time : duration;
+  const line = lines[i];
+  if (!line) return next;
+  const t = line.time;
+  /* 1) 词级 ASR 数据：句尾 = 最后一个词的结束 + 0.2s 尾音 */
+  if (line.words?.length) {
+    const last = line.words[line.words.length - 1];
+    const wEnd = last.e > last.s ? last.e : undefined;
+    if (wEnd != null && wEnd > t + 0.3) return Math.min(next, wEnd + 0.2);
+  }
+  /* 2) 卡拉OK双时间戳 [开始][唱完]：sungEnd 是校准过的人声结束时刻 */
+  if (line.sungEnd != null && line.sungEnd > t + 0.3) {
+    return Math.min(next, line.sungEnd);
+  }
+  /* 3) 声学人声段：段必须明显跨过句首（end > t+1.0）才说明唱了内容；
+       短碎段（如前奏呼喊）不可信，退回下一句 */
+  const segs = onsets?.segments ?? [];
+  const seg = segs.find((s) => t >= s.start - 0.25 && t <= s.end && s.end > t + 1.0);
+  if (seg) {
+    return Math.min(next, seg.end);
+  }
+  return next;
+}
 
 export default function LearnStep({
   clock,
@@ -17,6 +51,10 @@ export default function LearnStep({
   mastered,
   onToggle,
   pair,
+  lang,
+  videoOn,
+  setVideoOn,
+  onsets,
 }: {
   clock: Clock;
   parsed: ParsedLRC;
@@ -24,6 +62,10 @@ export default function LearnStep({
   mastered: Set<number>;
   onToggle: (i: number) => void;
   pair: { from: string | null; to: string; toLabel: string };
+  lang?: string | null;
+  videoOn: boolean;
+  setVideoOn: (v: boolean) => void;
+  onsets?: OnsetInfo | null;
 }) {
   const snap = useSyncEngine(clock, parsed.lines);
   const [showTr, setShowTr] = useState(true);
@@ -33,6 +75,8 @@ export default function LearnStep({
   const [entry, setEntry] = useState<{ cn: string; note?: string } | null>(null);
   const [dictState, setDictState] = useState<"idle" | "loading" | "error">("idle");
   const mediaHost = useRef<HTMLDivElement>(null);
+  const mediaEl = (clock as unknown as { media?: HTMLMediaElement }).media;
+  const isVideo = mediaEl instanceof HTMLVideoElement;
   /* 用户操作保护期：seek 后短暂禁用自动回卷，防止「按快进被拽回」 */
   const guardUntil = useRef(0);
   const guardedSeek = (t: number) => {
@@ -42,16 +86,16 @@ export default function LearnStep({
 
   const canTranslate = !!pair.from && pair.from !== pair.to;
 
-  /* 单句精学：当前句唱完 → 自动暂停回到句首。再按播放 = 重唱这一句 */
+  /* 单句精学：当前句唱完（人声结束，不含句尾伴奏）→ 自动暂停回到句首。再按播放 = 重唱这一句 */
   useEffect(() => {
     if (!loop || snap.index < 0 || snap.index >= parsed.lines.length) return;
     if (performance.now() < guardUntil.current) return;
-    const end = snap.index + 1 < parsed.lines.length ? parsed.lines[snap.index + 1].time : snap.duration;
+    const end = lineLoopEnd(snap.index, parsed.lines, onsets, snap.duration);
     if (clock.playing && snap.time >= end - 0.06) {
       clock.pause();
       clock.seek(parsed.lines[snap.index].time);
     }
-  }, [snap.time, snap.index, snap.duration, loop, clock, parsed.lines]);
+  }, [snap.time, snap.index, snap.duration, loop, clock, parsed.lines, onsets]);
 
   const gotoLine = (delta: number) => {
     const cur = snap.index < 0 ? 0 : snap.index;
@@ -137,8 +181,12 @@ export default function LearnStep({
   const speak = () => {
     if (!word) return;
     try {
+      const TTS: Record<string, string> = {
+        es: "es-ES", en: "en-US", fr: "fr-FR", de: "de-DE",
+        pt: "pt-PT", it: "it-IT", ja: "ja-JP", ko: "ko-KR", zh: "zh-CN",
+      };
       const u = new SpeechSynthesisUtterance(word);
-      u.lang = pair.from === "es" ? "es-ES" : "en-US";
+      u.lang = TTS[pair.from ?? "en"] ?? "en-US";
       u.rate = 0.9;
       speechSynthesis.cancel();
       speechSynthesis.speak(u);
@@ -152,8 +200,8 @@ export default function LearnStep({
   return (
     <div className="grid gap-5 lg:grid-cols-12">
       <div className="space-y-4 lg:col-span-8">
-        <div ref={mediaHost} className="empty:hidden" />
-        <div className="h-[430px]">
+        <div ref={mediaHost} className={isVideo && videoOn ? "" : "hidden"} />
+        <div className="h-[42vh] min-h-[320px] sm:h-[50vh] sm:min-h-[380px] lg:h-[58vh] lg:min-h-[440px]">
           <KaraokeStage
             lines={parsed.lines}
             snap={snap}
@@ -164,11 +212,12 @@ export default function LearnStep({
             onLineClick={onLineClick}
             mastered={mastered}
             onToggleMastered={onToggle}
+            lang={lang}
           />
         </div>
 
-        <div className="rounded-lg border border-line bg-ink-900/80 p-4">
-          <div className="flex items-center gap-4">
+        <div className="sticky bottom-3 z-30 rounded-lg border border-line bg-ink-950/95 p-3 shadow-[0_-10px_35px_-12px_rgba(0,0,0,0.8)] backdrop-blur-sm">
+          <div className="flex items-center justify-center gap-4">
             <button
               onClick={() => gotoLine(-1)}
               className="grid h-10 w-10 place-items-center rounded-md border border-line text-dim transition-all hover:-translate-y-0.5 hover:border-amber/50 hover:text-amber"
@@ -201,7 +250,7 @@ export default function LearnStep({
                 <path d="m13 12-7 5V7l7 5Zm7 0-7 5V7l7 5Z" />
               </svg>
             </button>
-            <div className="min-w-0 flex-1">
+            <div className="mt-2 w-full">
               <input
                 type="range"
                 min={0}
@@ -211,14 +260,14 @@ export default function LearnStep({
                 onChange={(e) => guardedSeek(parseFloat(e.target.value))}
                 className="w-full accent-amber"
               />
-              <div className="mt-1 flex justify-between font-mono text-[11px] text-faint">
+              <div className="mt-0.5 flex justify-between font-mono text-[10px] text-faint">
                 <span className="text-paper">{formatTime(snap.time)}</span>
                 <span>{formatTime(snap.duration)}</span>
               </div>
             </div>
           </div>
 
-          <div className="mt-4 flex flex-wrap items-center gap-2.5">
+          <div className="mt-2.5 flex flex-wrap items-center gap-2">
             <button
               onClick={() => setLoop((v) => !v)}
               className={`flex items-center gap-1.5 rounded-md border px-3 py-1.5 font-mono text-[11px] transition-all ${

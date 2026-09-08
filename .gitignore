@@ -1,9 +1,18 @@
 # Dependencies
 node_modules/
 
+# Local align backend (Python venv, cached results, bytecode)
+backend/.venv/
+backend/cache/
+__pycache__/
+*.pyc
+
 # Build output
 dist/
 dist-ssr/
+
+# Netlify local cache
+.netlify/
 
 # Env & secrets
 .env
@@ -23,3 +32,9 @@ pnpm-debug.log*
 .next/
 build/
 *.log
+
+# Local diagnostic & align-evidence artifacts (dev only)
+_sep/
+_*.py
+_*.log
+_*.json

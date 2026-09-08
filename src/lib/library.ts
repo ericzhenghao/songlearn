@@ -29,6 +29,10 @@ export type BundledEntry = {
   audioInRepo?: string;
   /** 云端存储桶地址（导出时若已配置云端会自动填上） */
   audioUrl?: string;
+  /** 时间轴校准版本：2 = 已按音频校准（打开时跳过自动对齐），缺省按 2 处理 */
+  alignV?: number;
+  /** 逐行中文翻译（与 lrc 歌词行一一对应，离线可用，不依赖在线翻译） */
+  translations?: string[];
 };
 
 export type LibrarySong = Omit<SongRecord, "source"> & {
@@ -37,11 +41,17 @@ export type LibrarySong = Omit<SongRecord, "source"> & {
   audioUrl?: string;
   /** 歌词全文的永久直链（云端条目正文存在这，打开时再拉） */
   lrcUrl?: string | null;
+  /** 词级对齐 JSON 的永久直链（同 lrcUrl：索引只存引用） */
+  timingsUrl?: string | null;
   /** 歌词行数（云端条目正文在直链上，用行数显示进度而不必拉全文） */
   lineCount?: number;
   /** 共享曲库里的全局热度（学唱人次）与上传者 */
   plays?: number;
   by?: string;
+  /** 该歌在共享曲库里有条目（即使被本地/内置同名覆盖，计数仍算云端歌曲） */
+  cloudSource?: boolean;
+  /** 逐行中文翻译（内置校准版预置，随歌词合并一起保留） */
+  translations?: string[];
 };
 
 /* ---------------- 内置曲库 ---------------- */
@@ -71,6 +81,8 @@ export function loadBundled(): LibrarySong[] {
         size: 0,
         audioInRepo: e.audioInRepo,
         audioUrl: e.audioUrl,
+        alignV: e.alignV ?? 2,
+        translations: e.translations,
       }));
   } catch {
     return [];
@@ -81,6 +93,23 @@ export function loadBundled(): LibrarySong[] {
 
 const keyOf = (t: string, a: string) => `${t.trim().toLowerCase()}|${a.trim().toLowerCase()}`;
 
+/* 宽松标题：去括号/去标点，用于识别「同一首歌的版本变体」。
+   例：《Waka Waka (This Time for Africa)…》≈《Waka Waka (Esto es África)》——
+   都是 Shakira 的同名歌，音频同一版本，歌词应以内置人工校准版为准。 */
+/* 宽松标题：去括号/去标点，用于识别「同一首歌的版本变体」。
+   例：《Waka Waka (This Time for Africa)…》≈《Waka Waka (Esto es África)》——
+   都是 Shakira 的同名歌，音频同一版本，歌词应以内置人工校准版为准。
+   按括号配对整段去除（方括号先吃，避免内部圆括号残留）。 */
+const normTitle = (t: string) =>
+  (t || "")
+    .toLowerCase()
+    .replace(/\[[^\]\[]*\]/g, " ")
+    .replace(/[（(][^）)]*[）)]/g, " ")
+    .replace(/[^\p{L}\p{N} ]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+const keyLoose = (t: string, a: string) => `${normTitle(t)}|${(a || "").trim().toLowerCase()}`;
+
 /** 合并三层曲库：本地优先（有音频），其次云端，最后内置 */
 export function mergeLibrary(
   local: SongRecord[],
@@ -88,18 +117,89 @@ export function mergeLibrary(
   bundled: LibrarySong[]
 ): LibrarySong[] {
   const map = new Map<string, LibrarySong>();
+  /* 内置校准版的宽松索引：云端/本地版本变体（标题不同）也能命中 */
+  const loose = new Map<string, LibrarySong>();
   /* 顺序：bundled → cloud → local，后写覆盖先写 = 本地优先 */
-  for (const s of bundled) map.set(keyOf(s.title, s.artist), s);
-  for (const s of cloud) map.set(keyOf(s.title, s.artist), s);
-  for (const s of local) {
+  for (const s of bundled) {
+    const k = keyOf(s.title, s.artist);
+    map.set(k, s);
+    const lk = keyLoose(s.title, s.artist);
+    if (!loose.has(lk)) loose.set(lk, s);
+  }
+  /* 精确命中内置 → 直接返回；否则宽松命中内置校准版（同歌手+去括号同名） */
+  const matchCalibrated = (t: string, a: string): LibrarySong | undefined => {
+    const exact = map.get(keyOf(t, a));
+    if (exact?.alignV === 2) return exact;
+    return loose.get(keyLoose(t, a));
+  };
+  for (const s of cloud) {
     const k = keyOf(s.title, s.artist);
     const prev = map.get(k);
-    map.set(k, {
+    if (prev?.alignV === 2) {
+      /* 同名内置版已人工校准：云端条目保留展示（热度/上传者/云直链），
+         歌词/音频沿用内置校准版，避免云端旧自动对齐版覆盖准的 */
+      map.set(k, {
+        ...s,
+        lrc: prev.lrc,
+        alignV: 2,
+        lang: prev.lang ?? s.lang,
+        cloudSource: true,
+        audioInRepo: prev.audioInRepo ?? s.audioInRepo,
+        audioUrl: prev.audioUrl ?? s.audioUrl,
+        translations: prev.translations,
+      });
+      continue;
+    }
+    const b = matchCalibrated(s.title, s.artist);
+    if (b?.alignV === 2) {
+      /* 标题版本变体（如中英文副标题不同）命中内置校准版：同样合并 */
+      map.set(k, {
+        ...s,
+        lrc: b.lrc,
+        alignV: 2,
+        lang: b.lang ?? s.lang,
+        cloudSource: true,
+        audioInRepo: b.audioInRepo ?? s.audioInRepo,
+        audioUrl: b.audioUrl ?? s.audioUrl,
+        translations: b.translations,
+      });
+    } else {
+      map.set(k, { ...s, cloudSource: true });
+    }
+  }
+  for (const s of local) {
+    const k = keyOf(s.title, s.artist);
+    /* 精确匹配优先；本地旧版标题（如英文副标题变体）宽松命中内置/云端校准版 */
+    const prev = map.get(k) ?? matchCalibrated(s.title, s.artist);
+    /* 内置版时间轴已人工校准（alignV=2）。本地记录若没有独立音频（只是打开过内置歌的
+       进度缓存），一律沿用内置校准歌词——旧的自动对齐缓存（alignV=2 但歌词错位）不得
+       覆盖内置版，这是用户反馈"对不齐"反复出现的根因。本地有自己上传的音频/直链则用本地 */
+    /* 内置/云端已有同首歌且时间轴已校准（alignV=2）→ 永远用校准版歌词。
+       本地后端自动对齐结果反复被证实错位（第11句起"乱七八糟"），且同名同歌手
+       基本就是同一首歌版本；本地记录只保留音频（fileBlob）、掌握进度等。
+       用户上传的全新歌（prev 不存在）走本地自己对齐的歌词。 */
+    const keepCalibrated = prev?.alignV === 2;
+    /* 并入校准版的条目，key 也统一到校准版标题下，避免旧变体标题重复占一行 */
+    const targetKey = keepCalibrated && prev ? keyOf(prev.title, prev.artist) : k;
+    map.set(targetKey, {
       ...s,
+      /* 版本变体合并到校准版后，标题/歌手统一用校准版（如西语名），
+         避免旧英文副标题条目继续占位显示 */
+      title: keepCalibrated ? prev?.title ?? s.title : s.title,
+      artist: keepCalibrated ? prev?.artist ?? s.artist : s.artist,
+      lang: keepCalibrated ? prev?.lang ?? s.lang : s.lang,
       source: "local",
+      lrc: keepCalibrated ? prev.lrc : s.lrc || prev?.lrc || "",
+      alignV: keepCalibrated ? 2 : s.alignV ?? prev?.alignV,
+      /* 云端热度/上传者随同名歌一起继承 */
+      plays: prev?.plays ?? s.plays,
+      by: prev?.by ?? s.by,
+      cloudSource: prev?.cloudSource ?? s.cloudSource,
       /* 本地记录没音频时，继承内置/云端的音频来源 */
       audioInRepo: prev?.audioInRepo,
-      audioUrl: prev?.audioUrl ?? prev?.audioUrl,
+      audioUrl: s.audioUrl ?? prev?.audioUrl,
+      /* 预置翻译随校准版歌词一起保留 */
+      translations: keepCalibrated ? prev?.translations : s.translations ?? prev?.translations,
     });
   }
   return [...map.values()].sort((a, b) => b.addedAt - a.addedAt);

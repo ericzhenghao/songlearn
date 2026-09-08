@@ -1,9 +1,10 @@
 /**
  * 全局曲库 —— 曲库是项目资产，不属于某个浏览器：
  *
- * 元数据（歌名/歌手/对齐好的歌词/热度）存在 npoint.io 公共 JSON 库（免注册免密钥，
- * 所有访问者读写同一个库）；音频文件匿名上传 catbox.moe 拿永久直链，别人打开
- * 你的歌可以直接唱。猫箱上传失败时歌词+时间轴照样共享——那才是曲库真正的资产。
+ * 元数据（歌名/歌手/对齐好的歌词/热度）存在 Supabase 表 songlearn_shared，
+ * 按 bin_id 分库（每个「共享曲库」一个 bin，分享链接 ?lib=bin 指向同一个库）；
+ * 歌词与音频文件匿名上传 Supabase Storage（public bucket "songs"）拿永久直链，
+ * 别人打开你的歌可以直接唱。直链失败时歌词+时间轴照样共享——那才是曲库真正的资产。
  *
  * 「曲库链接」= 你的部署地址 + ?lib=库ID。发朋友圈就是发这条链接，
  * 任何人点开都进入同一个曲库；他上传的歌也会自动进这个库。
@@ -22,6 +23,8 @@ export type GlobalSong = {
   lrc?: string;
   /** 对齐好的完整 LRC 的永久直链（.lrc 文本文件，几 KB） */
   lrcUrl?: string | null;
+  /** 词级对齐结果（Timings JSON）的永久直链。LRC 正文格式不可变，词级数据只能另存一份 */
+  timingsUrl?: string | null;
   /** 音频永久直链 —— 朋友点开就能唱；null = 仅共享歌词+时间轴 */
   audioUrl: string | null;
   audioMime: string;
@@ -34,14 +37,79 @@ export type GlobalSong = {
   addedAt: number;
 };
 
-type LibDoc = { v: 1; songs: GlobalSong[] };
+/* ---------------- Supabase 配置 ---------------- */
 
-const NPOINT = "https://api.npoint.io";
+const SB_URL = "https://bgdhsntgvsbgedxaebdg.supabase.co";
+const SB_KEY = "sb_publishable_bJ8XjE80w4yn0LRLePWXeg_V2DSGz6N";
+const SB_TABLE = "songlearn_shared";
+/** 公共存储桶：音频与 .lrc 歌词直链都放这里 */
+const SB_BUCKET = "songs";
+
+const SB_HDR: Record<string, string> = {
+  apikey: SB_KEY,
+  Authorization: `Bearer ${SB_KEY}`,
+};
+
+/** 行 → 前端模型 */
+type Row = {
+  bin_id: string;
+  id: string;
+  title: string;
+  artist: string;
+  album: string | null;
+  lang: string | null;
+  duration: number;
+  lines: number;
+  lrc_url: string | null;
+  audio_url: string | null;
+  audio_mime: string;
+  audio_size: number | null;
+  plays: number;
+  by: string;
+  added_at: number;
+};
+
+const rowToGlobal = (r: Row): GlobalSong => ({
+  id: r.id,
+  title: r.title,
+  artist: r.artist,
+  album: r.album ?? undefined,
+  lang: r.lang,
+  duration: r.duration,
+  lines: r.lines,
+  lrcUrl: r.lrc_url,
+  timingsUrl: null,
+  audioUrl: r.audio_url,
+  audioMime: r.audio_mime,
+  audioSize: r.audio_size ?? undefined,
+  plays: r.plays,
+  by: r.by,
+  addedAt: r.added_at,
+});
+
+const globalToRow = (bin: string, s: GlobalSong): Row => ({
+  bin_id: bin,
+  id: s.id,
+  title: s.title,
+  artist: s.artist,
+  album: s.album ?? null,
+  lang: s.lang,
+  duration: s.duration,
+  lines: s.lines,
+  lrc_url: s.lrcUrl ?? null,
+  audio_url: s.audioUrl,
+  audio_mime: s.audioMime,
+  audio_size: s.audioSize ?? null,
+  plays: s.plays,
+  by: s.by,
+  added_at: s.addedAt,
+});
+
 const LIB_KEY = "sl-global-lib";
 const NICK_KEY = "sl-nick";
 
 /** 部署者可预置库 ID（写进代码，所有部署默认进同一个库）；留空则由首位访问者一键创建 */
-export const DEFAULT_BIN = "";
+export const DEFAULT_BIN = "main";
 
 /* ---------------- 安全存储：localStorage 被禁用时页面照样能开 ---------------- */
 /*
@@ -123,7 +191,7 @@ export function saveNick(n: string): void {
   lsSet(NICK_KEY, n.trim() || loadNick());
 }
 
-/* ---------------- npoint 读写 ---------------- */
+/* ---------------- Supabase 读写 ---------------- */
 
 const timeoutSignal = (ms: number) => {
   const c = new AbortController();
@@ -131,40 +199,50 @@ const timeoutSignal = (ms: number) => {
   return c.signal;
 };
 
-/** 一键创建新的全局曲库，返回库 ID */
+const api = (path: string) => `${SB_URL}/rest/v1/${SB_TABLE}${path}`;
+const q = (v: string) => encodeURIComponent(v);
+
+/** 一键创建新的共享曲库，返回库 ID（表已存在且 key 可写 = 创建成功） */
 export async function createLib(): Promise<string> {
-  const res = await fetch(NPOINT, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ v: 1, songs: [] } satisfies LibDoc),
+  const bin = `sl-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const res = await fetch(api(`?select=bin_id&limit=1&bin_id=eq.${q(bin)}`), {
+    headers: SB_HDR,
     signal: timeoutSignal(9000),
   });
   if (!res.ok) throw new Error(`创建失败（HTTP ${res.status}）`);
-  const data = (await res.json()) as { id?: string };
-  if (!data.id) throw new Error("创建失败：服务未返回库 ID");
-  return data.id;
+  return bin;
 }
 
 export async function readLib(bin: string): Promise<GlobalSong[]> {
-  const res = await fetch(`${NPOINT}/${encodeURIComponent(bin)}`, { signal: timeoutSignal(9000) });
+  const res = await fetch(
+    api(`?select=*&bin_id=eq.${q(bin)}&order=added_at.desc`),
+    { headers: SB_HDR, signal: timeoutSignal(9000) }
+  );
   if (!res.ok) throw new Error(`读取失败（HTTP ${res.status}），检查库 ID 是否正确`);
-  const doc = (await res.json()) as Partial<LibDoc>;
-  return Array.isArray(doc.songs) ? doc.songs : [];
+  const rows = (await res.json()) as Row[];
+  return rows.map(rowToGlobal);
 }
 
-/** 读-改-写整库（小规模共享足够；冲突时随机退避重试一次） */
+/** 全量替换一个库（写整库；小规模共享足够，冲突时随机退避重试一次） */
 async function writeLib(bin: string, songs: GlobalSong[]): Promise<void> {
-  const body = JSON.stringify({ v: 1, songs } satisfies LibDoc);
+  const rows = songs.map((s) => globalToRow(bin, s));
   let lastStatus = 0;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const res = await fetch(`${NPOINT}/${encodeURIComponent(bin)}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body,
+      /* 先删该库旧行，再批量插入 = 整文档覆盖语义 */
+      await fetch(api(`?bin_id=eq.${q(bin)}`), {
+        method: "DELETE",
+        headers: SB_HDR,
         signal: timeoutSignal(9000),
       });
-      if (res.ok) return;
+      if (rows.length === 0) return;
+      const res = await fetch(api(``), {
+        method: "POST",
+        headers: { ...SB_HDR, "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal" },
+        body: JSON.stringify(rows),
+        signal: timeoutSignal(12000),
+      });
+      if (res.ok || res.status === 201) return;
       lastStatus = res.status;
     } catch {
       lastStatus = 0;
@@ -172,76 +250,110 @@ async function writeLib(bin: string, songs: GlobalSong[]): Promise<void> {
     await new Promise((r) => setTimeout(r, 300 + Math.random() * 500));
   }
   if (lastStatus >= 400 && lastStatus < 500) {
-    throw new Error(`索引已到免费上限（约 ${LIB_SONG_CAP} 首）：删掉一些旧歌，或新建一个曲库`);
+    throw new Error(`写入共享库失败（HTTP ${lastStatus}），可能是表权限或容量限制`);
   }
-  throw new Error("写入库失败（网络波动），稍后会自动重试");
+  throw new Error("写入共享库失败（网络波动），稍后会自动重试");
 }
 
 /* ---------------- 曲库条目操作 ---------------- */
 
+const sameKey = (t: string, a: string) => `${t.trim().toLowerCase()}|${a.trim().toLowerCase()}`;
+
 /** 新歌入库：同名歌已存在则更新并置顶，否则追加；返回最新列表 */
 export async function pushGlobal(bin: string, song: GlobalSong): Promise<GlobalSong[]> {
-  const songs = await readLib(bin);
-  const key = `${song.title.trim().toLowerCase()}|${song.artist.trim().toLowerCase()}`;
-  const idx = songs.findIndex(
-    (s) => `${s.title.trim().toLowerCase()}|${s.artist.trim().toLowerCase()}` === key
-  );
-  if (idx >= 0) {
-    const old = songs[idx];
-    songs[idx] = {
+  const key = sameKey(song.title, song.artist);
+  /* 查同名行（该 bin 内） */
+  const exist = await fetch(
+    api(`?select=*&bin_id=eq.${q(bin)}&limit=20`),
+    { headers: SB_HDR, signal: timeoutSignal(9000) }
+  ).then((r) => (r.ok ? (r.json() as Promise<Row[]>) : []));
+  const old = exist.find((x) => sameKey(x.title, x.artist) === key);
+
+  if (old) {
+    const merged = globalToRow(bin, {
       ...song,
       plays: old.plays,
-      /* 新上传没带上的部分保留旧直链（歌词/音频各自独立） */
-      lrcUrl: song.lrcUrl ?? old.lrcUrl,
-      audioUrl: song.audioUrl ?? old.audioUrl,
-    };
+      lrcUrl: song.lrcUrl ?? old.lrc_url,
+      timingsUrl: null,
+      audioUrl: song.audioUrl ?? old.audio_url,
+    });
+    /* 更新时间戳 → 按 added_at 排序自然置顶 */
+    merged.added_at = Date.now();
+    await fetch(api(`?id=eq.${q(old.id)}`), {
+      method: "PATCH",
+      headers: { ...SB_HDR, "Content-Type": "application/json", Prefer: "return=minimal" },
+      body: JSON.stringify(merged),
+      signal: timeoutSignal(9000),
+    });
   } else {
-    songs.unshift(song);
+    const row = globalToRow(bin, song);
+    row.added_at = Date.now();
+    await fetch(api(``), {
+      method: "POST",
+      headers: { ...SB_HDR, "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal" },
+      body: JSON.stringify([row]),
+      signal: timeoutSignal(9000),
+    });
   }
-  /* 索引只存引用（约 250B/首），免费额度可容纳 ~400 首；正文和音频都在 catbox 永久直链上 */
-  await writeLib(bin, songs.slice(0, LIB_SONG_CAP));
-  return songs;
+  return readLib(bin);
+}
+
+/** 词级对齐结果：表结构暂无 timings 列，保持 no-op 兼容旧调用 */
+export async function pushTimings(_bin: string, _id: string, _timingsUrl: string): Promise<void> {
+  /* 词级时间轴暂不共享；朋友端句级时间轴 + 本地后端对齐兜底 */
 }
 
 /** 学唱人次 +1 */
 export async function bumpPlays(bin: string, id: string): Promise<void> {
   try {
-    const songs = await readLib(bin);
-    const s = songs.find((x) => x.id === id);
-    if (!s) return;
-    s.plays += 1;
-    await writeLib(bin, songs);
+    const rows = (await fetch(api(`?select=plays&bin_id=eq.${q(bin)}&id=eq.${q(id)}&limit=1`), {
+      headers: SB_HDR,
+      signal: timeoutSignal(9000),
+    }).then((r) => (r.ok ? r.json() : []))) as { plays: number }[];
+    const plays = rows[0]?.plays ?? 0;
+    await fetch(api(`?bin_id=eq.${q(bin)}&id=eq.${q(id)}`), {
+      method: "PATCH",
+      headers: { ...SB_HDR, "Content-Type": "application/json", Prefer: "return=minimal" },
+      body: JSON.stringify({ plays: plays + 1 }),
+      signal: timeoutSignal(9000),
+    });
   } catch {
     /* 热度统计失败不影响学唱 */
   }
 }
 
 export async function removeGlobal(bin: string, id: string): Promise<GlobalSong[]> {
-  const songs = (await readLib(bin)).filter((s) => s.id !== id);
-  await writeLib(bin, songs);
-  return songs;
+  await fetch(api(`?bin_id=eq.${q(bin)}&id=eq.${q(id)}`), {
+    method: "DELETE",
+    headers: SB_HDR,
+    signal: timeoutSignal(9000),
+  });
+  return readLib(bin);
 }
 
-/* ---------------- 内容托管（catbox.moe 匿名上传，永久直链） ---------------- */
+/* ---------------- 内容托管（Supabase Storage 永久直链） ---------------- */
 
-const CATBOX = "https://catbox.moe/user/api.php";
-const CATBOX_RE = /^https:\/\/files\.catbox\.moe\/\S+$/;
-
-/** 单文件上限 150MB（猫箱允许 200MB；常见 MP3 3–9MB，1080P MV 通常 60–150MB） */
+/** 单文件上限 150MB（常见 MP3 3–9MB，1080P MV 通常 60–150MB） */
 export const MAX_AUDIO = 150 * 1024 * 1024;
 
-/** 索引容量：npoint 免费 bin 约 100KB，每首 ~250B → 约 400 首。音频/歌词正文不占这个额度 */
+/** 索引容量：表按行存储不设硬上限，保留常量防单库无限膨胀 */
 export const LIB_SONG_CAP = 400;
+
+const storageUrl = (path: string) => `${SB_URL}/storage/v1/object/${SB_BUCKET}/${path}`;
+const storagePublic = (path: string) => `${SB_URL}/storage/v1/object/public/${SB_BUCKET}/${path}`;
 
 /** 上传小文本（.lrc 歌词文件）拿永久直链 */
 export async function hostText(text: string, name: string): Promise<string | null> {
   try {
-    const fd = new FormData();
-    fd.append("reqtype", "fileupload");
-    fd.append("fileToUpload", new Blob([text], { type: "text/plain" }), name);
-    const res = await fetch(CATBOX, { method: "POST", body: fd, signal: timeoutSignal(30000) });
-    const url = (await res.text()).trim();
-    return CATBOX_RE.test(url) ? url : null;
+    const safe = name.replace(/[^\w.\-]+/g, "-");
+    const path = `lyrics/${Date.now()}-${safe}`;
+    const res = await fetch(storageUrl(path), {
+      method: "POST",
+      headers: { ...SB_HDR, "x-upsert": "true" },
+      body: new Blob([text], { type: "text/plain;charset=utf-8" }),
+      signal: timeoutSignal(30000),
+    });
+    return res.ok ? storagePublic(path) : null;
   } catch {
     return null;
   }
@@ -255,22 +367,21 @@ export function hostAudio(
 ): Promise<string | null> {
   if (blob.size > MAX_AUDIO) return Promise.resolve(null);
   return new Promise((resolve) => {
-    const fd = new FormData();
-    fd.append("reqtype", "fileupload");
-    fd.append("fileToUpload", blob, name);
+    const safe = name.replace(/[^\w.\-]+/g, "-");
+    const path = `${Date.now()}-${safe}`;
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", CATBOX);
+    xhr.open("POST", storageUrl(path));
+    xhr.setRequestHeader("apikey", SB_KEY);
+    xhr.setRequestHeader("Authorization", `Bearer ${SB_KEY}`);
+    xhr.setRequestHeader("x-upsert", "true");
     xhr.timeout = 180000;
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onProgress) onProgress(e.loaded, e.total);
     };
-    xhr.onload = () => {
-      const url = xhr.responseText.trim();
-      resolve(xhr.status === 200 && CATBOX_RE.test(url) ? url : null);
-    };
+    xhr.onload = () => resolve(xhr.status >= 200 && xhr.status < 300 ? storagePublic(path) : null);
     xhr.onerror = () => resolve(null);
     xhr.ontimeout = () => resolve(null);
-    xhr.send(fd);
+    xhr.send(blob);
   });
 }
 
