@@ -1,4 +1,4 @@
-﻿﻿﻿import { useEffect, useMemo, useRef, useState } from "react";
+﻿﻿import { useEffect, useMemo, useRef, useState } from "react";
 import AutoProcess, { type ProcessStage } from "./components/AutoProcess";
 import LearnStep from "./components/LearnStep";
 import PronunciationGuide from "./components/PronunciationGuide";
@@ -10,7 +10,7 @@ import { MediaFileClock, type Clock } from "./lib/clock";
 import { langLabel, NATIVE_LANGS } from "./lib/langs";
 import { exportLibrary, loadBundled, mergeLibrary, parseImport, entriesToRecords, type LibrarySong } from "./lib/library";
 import { parseLRC, serializeLRC, splitPlainLyrics, type ParsedLRC } from "./lib/lrc";
-import { detectLanguage, fetchLyricsForRecognizedSong, type LyricAlternative } from "./lib/lyrics";
+import { detectLanguage, fetchLyricsForRecognizedSong, type FoundLyrics, type LyricAlternative } from "./lib/lyrics";
 import {
   bumpPlays,
   createLib,
@@ -30,7 +30,8 @@ import {
   saveLib,
   type GlobalSong,
 } from "./lib/globalLib";
-import { recognizeAudio, type RecogResult } from "./lib/recognize";
+import { identifyFromFile } from "./lib/metainfo";
+import { bestLyricSimilarity, pickSearchPhrase, transcribeAudio } from "./lib/asr";
 import { deleteSong, findByTitleArtist, listSongs, newId, putSong, updateSong, type SongRecord } from "./lib/songdb";
 import { probeBackend, wordAlign } from "./lib/backend";
 import type { Timings } from "./lib/lrc";
@@ -89,11 +90,10 @@ export default function App() {
   const [shareMsg, setShareMsg] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
 
-  /* ---------------- 语言 & token ---------------- */
+  /* ---------------- 语言 ---------------- */
   const [nativeLang, setNativeLangState] = useState(() => lsGet("sl-native") || "zh-CN");
   const [songLang, setSongLangState] = useState(() => lsGet("sl-song") || "auto");
   const [detectedLang, setDetectedLang] = useState<string | null>(null);
-  const [auddToken, setAuddTokenState] = useState(() => lsGet("sl-audd-token") || "");
   const setNativeLang = (v: string) => {
     setNativeLangState(v);
     lsSet("sl-native", v);
@@ -101,10 +101,6 @@ export default function App() {
   const setSongLang = (v: string) => {
     setSongLangState(v);
     lsSet("sl-song", v);
-  };
-  const setAuddToken = (v: string) => {
-    setAuddTokenState(v);
-    lsSet("sl-audd-token", v);
   };
 
   /* 语言版本记忆：同一首歌手动切过语言（或明确声明过演唱语言）后，
@@ -517,67 +513,197 @@ export default function App() {
       setOnsets(onsetsRes);
 
       setStage("recognize");
-      let result: RecogResult | null = null;
-
-      if (auddToken.trim()) {
-        result = await recognizeAudio(f, auddToken, setRecogNote);
-        if (!result) await wait(300); /* 具体原因（token 报错/未命中/断网）由 recognizeAudio 写入识别链路 */
-      } else {
-        setRecogNote("未配置 audD token，跳过听声识曲（上传页可填免费 token）");
-        await wait(300);
+      /* 语音识别：靠音频内容认歌，不依赖歌名（文件名/ID3 常是随手起的，不可靠）。
+         本地 Whisper（模型随站部署），识别开头 ~90 秒唱词，用文本去匹配真实歌词。 */
+      setRecogNote("语音识别：Whisper 正在听唱词…（首次需加载约 40MB 模型，之后秒开）");
+      let asr: Awaited<ReturnType<typeof transcribeAudio>> | null = null;
+      try {
+        asr = await transcribeAudio(buffer, 90, (m) => setRecogNote(`语音识别：${m}`), songLang === "auto" ? undefined : songLang);
+      } catch (e) {
+        console.error("[ASR]", e);
+        const em = String((e as Error)?.message || e).slice(0, 200);
+        setRecogNote(`语音识别暂不可用（${em}），尝试用文件名线索…`);
       }
 
-      if (!result) {
-        setFailReason(
-          auddToken.trim()
-            ? "听声识曲没通过（真实原因见下方「识别链路」）。可重新填写 audD token 再试，也可手动指定歌名。"
-            : "还没认出这首歌：听声识曲需要一枚免费 audD token（audd.io 注册即送，下方点「填写 audD token」粘贴即可）。也可手动指定歌名。"
-        );
-        setStage("failed");
-        return;
+      /* 本地候选（文件名/ID3）：只当"怀疑对象"，用 ASR 文本验证歌词是否真的匹配 */
+      const meta = await identifyFromFile(f);
+
+      /* 用 ASR 文本给每份候选歌词打分：命中才算数 */
+      const runScoring = async (asrRes: NonNullable<typeof asr>) => {
+        let bFound: FoundLyrics | null = null;
+        let bScore = 0;
+        let bTitle = "";
+        let bArtist = "未知艺人";
+        let bHit = false;
+        const remember = (found: FoundLyrics, t: string, a: string) => {
+          const s = asrRes?.text ? bestLyricSimilarity(asrRes.text, found.text) : 0;
+          const dbg = (window as unknown as { __dbg?: Record<string, unknown> }).__dbg || {};
+          dbg.scores = [...((dbg.scores as { t: string; s: number; via: string }[]) || []), { t, s: Number(s.toFixed(3)), via: found.via }];
+          (window as unknown as { __dbg?: Record<string, unknown> }).__dbg = dbg;
+          if (s > bScore) {
+            bScore = s;
+            bFound = found;
+            bTitle = t;
+            bArtist = a || "未知艺人";
+          }
+        };
+        if (asrRes?.text) {
+          (window as unknown as { __dbg?: Record<string, unknown> }).__dbg = {
+            ...((window as unknown as { __dbg?: Record<string, unknown> }).__dbg || {}),
+            asrText: asrRes.text.slice(0, 300),
+          };
+          /* 第一轮：只用内置校准版歌词打分（歌词已人工校准，时间轴准）。命中 ≥0.25 直接定案，
+             后续云端/本地/在线候选一律不覆盖——内置版是人工逐句校准的，ASR 自动对齐版
+             （易错位、含 [Música] 噪音）和在线版本（版本可能不符）都不得抢它。
+             注：云端/本地同名条目合并后 source 已非 bundled，但 lrc 仍是指向内置校准版，
+             故按「lrc 是否为内置歌词」判断，而不是 source。 */
+          const builtinLrcs = new Set(bundled.filter((b) => b.lrc).map((b) => b.lrc));
+          for (const lib of merged) {
+            if (!lib.lrc || !builtinLrcs.has(lib.lrc)) continue;
+            remember(
+              {
+                text: lib.lrc,
+                synced: true,
+                via: "内置曲库 · 已校准",
+                trackName: lib.title,
+                artistName: lib.artist,
+                matchedLang: lib.lang || detectLanguage(lib.lrc) || null,
+                langMismatch: false,
+              },
+              lib.title,
+              lib.artist
+            );
+          }
+          bHit = bFound?.via === "内置曲库 · 已校准" && bScore >= 0.25;
+
+          /* 内置没命中，才用云端/本地已有歌（可能是用户之前上传的歌，二次学习直接命中） */
+          if (!bHit) {
+            for (const lib of merged) {
+              if (builtinLrcs.has(lib.lrc || "") || !lib.lrc) continue;
+              remember(
+                {
+                  text: lib.lrc,
+                  synced: true,
+                  via: "曲库 · 已有",
+                  trackName: lib.title,
+                  artistName: lib.artist,
+                  matchedLang: lib.lang || detectLanguage(lib.lrc) || null,
+                  langMismatch: false,
+                },
+                lib.title,
+                lib.artist
+              );
+            }
+          }
+
+          for (const c of meta.candidates) {
+            try {
+              const preferredLang = songLang === "auto" ? null : songLang;
+              const rememberedLang = preferredLang ? null : readLangPick(c.title, c.artist || c.title);
+              const found = await fetchLyricsForRecognizedSong(c.title, c.artist || c.title, duration, preferredLang, rememberedLang);
+              if (found && !bHit) remember(found, c.title, c.artist || "");
+            } catch (e) {
+              console.error("[LYRIC-FETCH]", e);
+            }
+          }
+
+          /* 候选都不够像：用识别出的歌词片段去 QQ/网易 搜歌（服务端代理，绕 CORS） */
+          if (!bHit && bScore < 0.4) {
+            const phrase = pickSearchPhrase(asrRes.text);
+            if (phrase) {
+              try {
+                const r = await fetch(`/.netlify/functions/lyric-search?q=${encodeURIComponent(phrase)}`);
+                const j = (await r.json()) as { candidates?: { title: string; artist: string }[] };
+                for (const cd of j?.candidates || []) {
+                  try {
+                    const preferredLang = songLang === "auto" ? null : songLang;
+                    const rememberedLang = preferredLang ? null : readLangPick(cd.title, cd.artist || cd.title);
+                    const found = await fetchLyricsForRecognizedSong(cd.title, cd.artist || cd.title, duration, preferredLang, rememberedLang);
+                    if (found) remember(found, cd.title, cd.artist || "");
+                  } catch (e) {
+                    console.error("[LYRIC-FETCH2]", e);
+                  }
+                }
+              } catch (e) {
+                console.error("[LYRIC-SEARCH]", e);
+              }
+            }
+          }
+        }
+        return { bestFound: bFound, bestScore: bScore, bestTitle: bTitle, bestArtist: bArtist, builtinHit: bHit };
+      };
+
+      let scored = asr?.text
+        ? await runScoring(asr)
+        : { bestFound: null as FoundLyrics | null, bestScore: 0, bestTitle: "", bestArtist: "未知艺人", builtinHit: false };
+      /* auto 模式且内置没命中：带伴奏的西语歌常被 whisper 误判成英文（如 Sofia → "I'm not today…"）。
+         内置曲库 4 首里有 3 首西语，强制西语再转录一次，匹配更好则替换。 */
+      if (songLang === "auto" && !scored.builtinHit) {
+        try {
+          const asrEs = await transcribeAudio(buffer, 90, (m) => setRecogNote(`语音识别：${m}`), "es");
+          if (asrEs.text && asrEs.text !== asr?.text) {
+            const scoredEs = await runScoring(asrEs);
+            if (scoredEs.bestScore > scored.bestScore) {
+              scored = scoredEs;
+              asr = asrEs;
+            }
+          }
+        } catch (e) {
+          console.error("[ASR-ES]", e);
+        }
       }
+      const { bestFound, bestScore, bestTitle, bestArtist, builtinHit } = scored;
 
-      setRecogNote(result.detail);
-      setStage("lyrics");
-
-      /* 演唱语言 = 用户在上传页声明的"内容语言"，优先于歌名（Waka Waka 歌名是英文、唱的是西语）；
-         自动模式下沿用"上次学这首歌时手动切过的语言版本"。 */
-      const preferredLang = songLang === "auto" ? null : songLang;
-      const rememberedLang = preferredLang ? null : readLangPick(result.title, result.artist);
-      const foundLyrics = await fetchLyricsForRecognizedSong(result.title, result.artist, duration, preferredLang, rememberedLang);
-      let lyricsText: string | null = null;
-      if (foundLyrics) {
-        lyricsText = foundLyrics.text;
-        setLyricLang(foundLyrics.matchedLang);
-        setLyricAlts(foundLyrics.alternatives ?? []);
-        if (preferredLang && !foundLyrics.langMismatch) saveLangPick(result.title, result.artist, preferredLang);
+      if (bestFound && bestScore >= (bestFound.via === "内置曲库 · 已校准" ? 0.25 : 0.3)) {
+        setStage("lyrics");
+        setLyricLang(bestFound.matchedLang);
+        setLyricAlts(bestFound.alternatives ?? []);
+        const preferredLang = songLang === "auto" ? null : songLang;
+        if (preferredLang && !bestFound.langMismatch) saveLangPick(bestTitle, bestArtist, preferredLang);
         setLyricWarning(
-          foundLyrics.langMismatch
-            ? `没找到 ${langLabel(preferredLang)} 版歌词，先用《${foundLyrics.trackName}》（${langLabel(foundLyrics.matchedLang)}）。歌词语言和你选的演唱语言不一致——可在学唱页一键切换语言版本。`
+          bestFound.langMismatch
+            ? `没找到 ${langLabel(preferredLang)} 版歌词，先用《${bestFound.trackName}》（${langLabel(bestFound.matchedLang)}）。歌词语言和你选的演唱语言不一致——可在学唱页一键切换语言版本。`
             : null
         );
         setRecogNote(
-          `${result.detail} · 歌词《${foundLyrics.trackName}》（${langLabel(foundLyrics.matchedLang)}）· ${foundLyrics.via}${
-            foundLyrics.synced ? "（带时间戳，对齐更准）" : "（纯文本，按人声段估算）"
+          `语音识别命中《${bestFound.trackName}》（${langLabel(bestFound.matchedLang)}）· 匹配度 ${Math.round(bestScore * 100)}% · ${bestFound.via}${
+            bestFound.synced ? "（带时间戳，对齐更准）" : "（纯文本，按人声段估算）"
           }`
         );
-      } else if (result.lyrics) {
-        lyricsText = result.lyrics;
-        setLyricLang(null);
-        setLyricWarning(null);
-        setRecogNote(`${result.detail} · 在线歌词库未返回全文，用识别服务自带的歌词`);
-      }
-
-      if (!lyricsText) {
-        setFailReason(`认出了《${result.title}》— ${result.artist}，但没取到歌词（可能网络受限）。可重试，或手动指定歌名。`);
-        setStage("failed");
+        const detected = detectLanguage(bestFound.text) ?? null;
+        await finalize(bestTitle, bestArtist, undefined, bestFound.text, detected, f, duration, onsetsRes);
         return;
       }
 
-      const detected = detectLanguage(lyricsText) ?? null;
-      await finalize(result.title, result.artist, result.album, lyricsText, detected, f, duration, onsetsRes);
-    } catch {
-      setFailReason((r) => r || "处理过程出了点意外（解码或网络），重试一次通常能解决。");
+      /* 保底：歌词库没匹配上，直接用语音识别结果（带时间戳）当歌词 */
+      if (asr?.text && asr.segments.length >= 2) {
+        const fmt = (t: number) => {
+          const m = Math.floor(t / 60);
+          const s = Math.floor(t % 60);
+          const ms = Math.round((t - Math.floor(t)) * 100);
+          return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(ms).padStart(2, "0")}`;
+        };
+        const lrcText = asr.segments.map((sg) => `[${fmt(sg.start)}]${sg.text}`).join("\n");
+        setStage("lyrics");
+        setLyricLang(null);
+        setRecogNote(`歌词库未匹配到该歌，已用语音识别结果直接生成歌词（${asr.segments.length} 句，带时间戳）。歌名若已知可在学唱页修正。`);
+        setLyricWarning(null);
+        const detected = detectLanguage(asr.text) ?? null;
+        await finalize(bestTitle || "识别歌曲", bestArtist, undefined, lrcText, detected, f, duration, onsetsRes);
+        return;
+      }
+
+      /* 全失败：让用户手动指定歌名（不依赖任何外部识别服务） */
+      setFailReason(
+        meta.candidates.length
+          ? `语音识别没能匹配到歌词（本地线索《${meta.candidates[0].title}》也未命中歌词库）。可手动填写歌名再搜，或换清晰原曲再试（无需任何 token）。`
+          : "没认出这首歌：语音识别无结果，文件名/标签也没有歌名线索。可手动填写歌名再搜（无需任何 token）。"
+      );
+      setStage("failed");
+      return;
+    } catch (e) {
+      console.error("[PIPELINE]", e);
+      setFailReason((r) => r || `处理过程出了点意外（${String((e as Error)?.message || e).slice(0, 160)}），重试一次通常能解决。`);
       setStage("failed");
     }
   }
@@ -1051,11 +1177,6 @@ export default function App() {
               songLang={songLang}
               onNative={setNativeLang}
               onSong={setSongLang}
-              auddToken={auddToken}
-              onToken={(v) => {
-                setAuddToken(v);
-                if (v) showToast("token 已保存 · 听声识曲已开启");
-              }}
             />
           )}
 
@@ -1067,11 +1188,6 @@ export default function App() {
               failReason={failReason}
               recogNote={recogNote}
               lyricPreview={lyricPreview}
-              auddToken={auddToken}
-              onToken={(v) => {
-                setAuddToken(v);
-                if (v) showToast("token 已保存 · 点「重试」重新识别");
-              }}
               onRetry={file ? () => void runPipeline(file) : undefined}
               onManual={(t, a) => void manualResolve(t, a)}
               onFallback={openFallback}
@@ -1216,4 +1332,5 @@ function exportLRC(
     .join("\n");
   return `${head}\n${body}\n`;
 }
+
 

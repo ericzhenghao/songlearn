@@ -1,6 +1,5 @@
 import { useRef, useState } from "react";
 import { NATIVE_LANGS, SONG_LANGS } from "../lib/langs";
-import { validateAudDToken } from "../lib/recognize";
 
 export function StepUpload({
   onFile,
@@ -8,23 +7,15 @@ export function StepUpload({
   songLang,
   onNative,
   onSong,
-  auddToken,
-  onToken,
 }: {
   onFile: (f: File) => void;
   nativeLang: string;
   songLang: string;
   onNative: (v: string) => void;
   onSong: (v: string) => void;
-  auddToken: string;
-  onToken: (v: string) => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [drag, setDrag] = useState(false);
-  const [showEngine, setShowEngine] = useState(false);
-  const [tokenDraft, setTokenDraft] = useState(auddToken);
-  const [tokenChecking, setTokenChecking] = useState(false);
-  const [tokenErr, setTokenErr] = useState<string | null>(null);
 
   const pick = (f: File | undefined | null) => {
     if (f && (f.type.startsWith("audio") || f.type.startsWith("video"))) onFile(f);
@@ -71,53 +62,8 @@ export function StepUpload({
         <p className="mt-1.5 font-mono text-[11px] leading-relaxed text-faint">
           找歌词时按<span className="text-amber">演唱语言</span>为准，不照歌名——比如《Waka Waka》歌名是英文，但西语版就选 Español。
         </p>
-
-        <button onClick={() => setShowEngine((v) => !v)} className="mt-3 font-mono text-[11px] text-faint underline-offset-2 transition-colors hover:text-amber hover:underline">
-          {showEngine ? "▾ 收起" : "▸ 听声识曲设置（audD token）"}
-        </button>
-        {showEngine && (
-          <div className="animate-rise mt-3 space-y-2">
-            <p className="text-xs leading-relaxed text-dim">
-              听声识曲需要一枚免费的 audD token（<span className="font-mono text-teal">audd.io</span> 注册即送额度）。配置后，上传任意歌曲都能自动认出歌名。
-            </p>
-            <div className="flex gap-2">
-              <input
-                value={tokenDraft}
-                onChange={(e) => {
-                  setTokenDraft(e.target.value);
-                  setTokenErr(null);
-                }}
-                placeholder="粘贴 audD token…"
-                className="min-w-0 flex-1 rounded-md border border-line bg-ink-950/80 px-3 py-2 font-mono text-xs text-paper outline-none transition-colors placeholder:text-faint/50 focus:border-amber/60"
-              />
-              <button
-                onClick={async () => {
-                  const v = tokenDraft.trim();
-                  if (!v || tokenChecking) return;
-                  setTokenChecking(true);
-                  setTokenErr(null);
-                  const check = await validateAudDToken(v);
-                  setTokenChecking(false);
-                  if (check.ok) {
-                    onToken(v);
-                    setTokenDraft(v);
-                  } else {
-                    setTokenErr(check.message);
-                  }
-                }}
-                disabled={!tokenDraft.trim() || tokenChecking}
-                className="shrink-0 rounded-md border border-amber/50 bg-amber/10 px-4 py-2 font-display text-sm text-amber transition-all enabled:hover:-translate-y-0.5 enabled:hover:bg-amber/20 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {tokenChecking ? "验证中…" : "验证并保存"}
-              </button>
-            </div>
-            {tokenErr && <p className="font-mono text-[11px] leading-relaxed text-rose">✕ {tokenErr}</p>}
-            <p className="font-mono text-[10px] text-faint">token 只存在你自己的浏览器里，不会上传。</p>
-          </div>
-        )}
       </div>
 
-      {/* 拖拽区 */}
       <div
         onDragOver={(e) => {
           e.preventDefault();

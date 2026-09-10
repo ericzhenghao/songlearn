@@ -1,12 +1,11 @@
 import { useState } from "react";
-import { validateAudDToken } from "../lib/recognize";
 
 export type ProcessStage = "decode" | "fingerprint" | "recognize" | "lyrics" | "align" | "done" | "failed";
 
 const STAGES: { key: ProcessStage; name: string; detail: string }[] = [
   { key: "decode", name: "解码音频轨道", detail: "从你的文件里提取声音（视频同样支持）" },
   { key: "fingerprint", name: "提取声纹指纹", detail: "频谱特征 + 乐句起点 + 人声段检测" },
-  { key: "recognize", name: "识别歌曲", detail: "听声识曲（audD）· 不读文件名" },
+  { key: "recognize", name: "识别歌曲", detail: "本地识别：文件名 + 音频标签 · 零 token" },
   { key: "lyrics", name: "联网搜索歌词", detail: "lrclib.net · 多通道取词 · 防串歌" },
   { key: "align", name: "自动对齐时间轴", detail: "把歌词吸附到检测到的乐句点" },
   { key: "done", name: "就绪 · 已存进曲库", detail: "正在进入学唱…" },
@@ -21,8 +20,6 @@ export default function AutoProcess({
   failReason,
   recogNote,
   lyricPreview,
-  auddToken,
-  onToken,
   onRetry,
   onManual,
   onFallback,
@@ -33,8 +30,6 @@ export default function AutoProcess({
   failReason?: string | null;
   recogNote?: string | null;
   lyricPreview?: string | null;
-  auddToken?: string;
-  onToken?: (v: string) => void;
   onRetry?: () => void;
   onManual?: (title: string, artist: string) => void;
   onFallback?: () => void;
@@ -44,10 +39,6 @@ export default function AutoProcess({
   const [manualOpen, setManualOpen] = useState(false);
   const [mTitle, setMTitle] = useState("");
   const [mArtist, setMArtist] = useState("");
-  const [tokenOpen, setTokenOpen] = useState(false);
-  const [tokenDraft, setTokenDraft] = useState("");
-  const [tokenChecking, setTokenChecking] = useState(false);
-  const [tokenErr, setTokenErr] = useState<string | null>(null);
 
   const statusOf = (key: ProcessStage): "wait" | "active" | "done" | "fail" => {
     const i = ORDER.indexOf(key);
@@ -171,17 +162,6 @@ export default function AutoProcess({
                     ✎ 我知道歌名
                   </button>
                 )}
-                {onToken && (
-                  <button
-                    onClick={() => {
-                      setTokenDraft(auddToken ?? "");
-                      setTokenOpen((v) => !v);
-                    }}
-                    className="rounded-md border border-sky/50 bg-sky/10 px-4 py-2 font-display text-sm text-sky transition-all hover:-translate-y-0.5 hover:bg-sky/20"
-                  >
-                    🔑 {auddToken ? "重新填写 audD token" : "填写 audD token"}
-                  </button>
-                )}
                 {onFallback && (
                   <button onClick={onFallback} className="rounded-md border border-line px-4 py-2 font-mono text-[11px] text-dim transition-colors hover:border-sky/50 hover:text-sky">
                     先随便听听 →
@@ -205,46 +185,6 @@ export default function AutoProcess({
                 </div>
               )}
 
-              {tokenOpen && onToken && (
-                <div className="animate-rise space-y-2 rounded-md border border-line-soft bg-ink-850/50 p-3">
-                  <p className="text-xs leading-relaxed text-dim">
-                    听声识曲需要一枚免费 token（<span className="font-mono text-sky">audd.io</span> 注册即送额度）。保存前会先验证 token 是否有效，通过后点上方「重试」重新识别。
-                  </p>
-                  <div className="flex gap-2">
-                    <input
-                      value={tokenDraft}
-                      onChange={(e) => {
-                        setTokenDraft(e.target.value);
-                        setTokenErr(null);
-                      }}
-                      placeholder="粘贴 audD token…"
-                      className="min-w-0 flex-1 rounded-md border border-line bg-ink-950/80 px-3 py-2 font-mono text-xs text-paper outline-none transition-colors placeholder:text-faint/50 focus:border-sky/60"
-                    />
-                    <button
-                      onClick={async () => {
-                        const v = tokenDraft.trim();
-                        if (!v || tokenChecking) return;
-                        setTokenChecking(true);
-                        setTokenErr(null);
-                        const check = await validateAudDToken(v);
-                        setTokenChecking(false);
-                        if (check.ok) {
-                          onToken(v);
-                          setTokenOpen(false);
-                        } else {
-                          setTokenErr(check.message);
-                        }
-                      }}
-                      disabled={!tokenDraft.trim() || tokenChecking}
-                      className="shrink-0 rounded-md bg-sky px-4 py-2 font-display text-sm text-ink-950 transition-all enabled:hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      {tokenChecking ? "验证中…" : "验证并保存"}
-                    </button>
-                  </div>
-                  {tokenErr && <p className="font-mono text-[11px] leading-relaxed text-rose">✕ {tokenErr}</p>}
-                  <p className="font-mono text-[10px] text-faint">token 只存在你自己的浏览器里，不会上传。</p>
-                </div>
-              )}
             </div>
           )}
         </div>

@@ -1,0 +1,6 @@
+Serving HTTP on :: port 4173 (http://[::]:4173/) ...
+::1 - - [10/Sep/2026 12:15:53] "GET / HTTP/1.1" 200 -
+::1 - - [10/Sep/2026 12:16:00] "GET /?t=1789013760 HTTP/1.1" 200 -
+::1 - - [10/Sep/2026 12:16:00] "GET /assets/index-DIy40TnI.js HTTP/1.1" 304 -
+::1 - - [10/Sep/2026 12:16:00] "GET /assets/index-CbwXGCLo.css HTTP/1.1" 304 -
+::1 - - [10/Sep/2026 12:16:07] "GET /models/onnx-community/whisper-base/onnx/decoder_model_merged_quantized.onnx HTTP/1.1" 200 -

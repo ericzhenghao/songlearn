@@ -4,6 +4,7 @@ import type { Clock } from "../lib/clock";
 import { translate } from "../lib/translate";
 import { formatTime, type ParsedLRC } from "../lib/lrc";
 import type { OnsetInfo } from "../lib/align";
+import { splitChunks, type Chunk } from "../lib/chunk";
 import KaraokeStage from "./KaraokeStage";
 
 const extractWords = (text: string) =>
@@ -86,16 +87,42 @@ export default function LearnStep({
 
   const canTranslate = !!pair.from && pair.from !== pair.to;
 
+  /* 长句精学：当前句拆小段（保留——精学功能） */
+  const [activeChunk, setActiveChunk] = useState<number | null>(null);
+
+  /* 句切换：清空本句子段选择 */
+  useEffect(() => {
+    setActiveChunk(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snap.index]);
+
   /* 单句精学：当前句唱完（人声结束，不含句尾伴奏）→ 自动暂停回到句首。再按播放 = 重唱这一句 */
   useEffect(() => {
     if (!loop || snap.index < 0 || snap.index >= parsed.lines.length) return;
     if (performance.now() < guardUntil.current) return;
-    const end = lineLoopEnd(snap.index, parsed.lines, onsets, snap.duration);
+    const chunk = activeChunk != null && chunks[activeChunk] ? chunks[activeChunk] : null;
+    const end = chunk ? chunk.e : lineLoopEnd(snap.index, parsed.lines, onsets, snap.duration);
+    const back = chunk ? chunk.s : parsed.lines[snap.index].time;
     if (clock.playing && snap.time >= end - 0.06) {
       clock.pause();
-      clock.seek(parsed.lines[snap.index].time);
+      clock.seek(back);
     }
-  }, [snap.time, snap.index, snap.duration, loop, clock, parsed.lines, onsets]);
+  }, [snap.time, snap.index, snap.duration, loop, clock, parsed.lines, onsets, activeChunk]);
+
+  /* 长句拆分（当前句） */
+  const chunks = useMemo<Chunk[]>(() => {
+    const cur = parsed.lines[snap.index];
+    if (!cur) return [];
+    const end = lineLoopEnd(snap.index, parsed.lines, onsets, snap.duration);
+    return splitChunks(cur, end);
+  }, [snap.index, parsed.lines, onsets, snap.duration]);
+
+  const selectChunk = (c: Chunk) => {
+    const k = chunks.findIndex((x) => x.s === c.s && x.e === c.e);
+    setActiveChunk(k >= 0 && activeChunk === k ? null : k >= 0 ? k : null);
+    guardedSeek(c.s);
+    if (!clock.playing) void clock.play();
+  };
 
   const gotoLine = (delta: number) => {
     const cur = snap.index < 0 ? 0 : snap.index;
@@ -213,6 +240,9 @@ export default function LearnStep({
             mastered={mastered}
             onToggleMastered={onToggle}
             lang={lang}
+            chunks={chunks.length > 1 ? chunks : undefined}
+            activeChunk={activeChunk}
+            onChunkClick={selectChunk}
           />
         </div>
 
@@ -387,6 +417,7 @@ export default function LearnStep({
                 <div className="h-full rounded-full bg-gradient-to-r from-amber to-teal transition-all duration-500" style={{ width: `${pct}%` }} />
               </div>
               <p className="mt-2 font-mono text-[11px] text-dim">已掌握 {mastered.size} / {parsed.lines.length} 句</p>
+
               <ul className="mt-4 space-y-1.5">
                 {parsed.lines.map((l, i) => {
                   const done = mastered.has(i);

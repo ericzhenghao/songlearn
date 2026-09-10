@@ -1,8 +1,9 @@
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import type { SyncSnap } from "../hooks/useSyncEngine";
 import type { LyricLine } from "../lib/lrc";
 import { formatStamp } from "../lib/lrc";
 import { transliterate, toIPA, splitWords } from "../lib/phonetics";
+import type { Chunk } from "../lib/chunk";
 
 const cleanTranslation = (t?: string) => (t ? t.replace(/[「」]/g, "") : undefined);
 
@@ -45,7 +46,7 @@ function LyricRow({
       </span>
 
       {showPhonetics && (
-        <div className={`mt-0.5 ${big ? "space-y-0" : "space-y-0"}`}>
+        <div className="mt-0.5">
           <span className="block whitespace-pre-wrap break-words font-mono text-[10px] leading-snug text-teal/75">
             {ws.map((w, k) => {
               const tip = transliterate(w, lang);
@@ -84,6 +85,9 @@ export default function KaraokeStage({
   onToggleMastered,
   lang,
   showPhonetics = true,
+  chunks,
+  activeChunk,
+  onChunkClick,
 }: {
   lines: LyricLine[];
   snap: SyncSnap;
@@ -96,6 +100,9 @@ export default function KaraokeStage({
   onToggleMastered?: (i: number) => void;
   lang?: string | null;
   showPhonetics?: boolean;
+  chunks?: Chunk[];
+  activeChunk?: number | null;
+  onChunkClick?: (c: Chunk) => void;
 }) {
   const cur = lines[snap.index];
   const nxt = lines[snap.index + 1];
@@ -159,6 +166,29 @@ export default function KaraokeStage({
               </div>
 
               <LyricRow line={cur} active snap={snap} lang={lang} showPhonetics={showPhonetics} big />
+
+              {/* 长句拆分小段（点选精学） */}
+              {chunks && chunks.length > 1 && (
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  {chunks.map((c, k) => (
+                    <button
+                      key={k}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onChunkClick?.(c);
+                      }}
+                      className={`max-w-[240px] truncate rounded-full border px-2.5 py-1 font-mono text-[10px] transition-all ${
+                        activeChunk === k
+                          ? "border-rose/70 bg-rose/15 text-rose"
+                          : "border-line-soft bg-ink-850/70 text-dim hover:border-rose/40 hover:text-paper"
+                      }`}
+                      title={c.label}
+                    >
+                      {c.label}
+                    </button>
+                  ))}
+                </div>
+              )}
 
               <div className="mt-2.5 h-[3px] w-full max-w-md overflow-hidden rounded-full bg-ink-700">
                 <div
