@@ -295,6 +295,17 @@ export default function App() {
         finalLines = lines.map((l) => ({ ...l, time: Math.max(0, l.time + offset) }));
         setAlignNote(`已定位原唱开唱 ${Math.round(startSec)}s（已跳过开头讲话/前奏），歌词时间轴整体对齐`);
         startApplied = true;
+        /* 开头哼唱行（如 "Oh-eh, oh-eh"）在 LRC 里时间极早，但实际演唱在开唱点附近；
+           版本差异会让它掉进讲话区（Dai Dai 的 Oh-eh 被平移到 12s，而 12s 还在讲话）。
+           把明显早于开唱点的哼唱/无实义词行吸附到开唱点前，避免"歌词提前走"。 */
+        const humRe = /^(oh|eh|ah|la|na|da|yeah|ya|ay|wo|ooh|mmm|um|ba|de|do|he|she|hey|ho)\b|^[♪♫]/i;
+        const humLines = finalLines.filter((l) => l.time < startSec - 5 && humRe.test(l.text.trim()));
+        if (humLines.length) {
+          const anchor = Math.max(0, startSec - 2.5);
+          finalLines = finalLines.map((l) =>
+            l.time < startSec - 5 && humRe.test(l.text.trim()) ? { ...l, time: anchor } : l
+          );
+        }
       }
     }
 
@@ -907,36 +918,33 @@ export default function App() {
     meta: { title: string; artist: string; album?: string }
   ) {
     try {
-      const ons = detectOnsetsBuffer(await decodeAudio(f));
+      const buffer = await decodeAudio(f);
+      const ons = detectOnsetsBuffer(buffer);
       setOnsets(ons);
 
-      /* 优先用 ASR 后端对齐（和 finalize 一致） */
-      const backend = await probeBackend();
       let healed: { time: number; text: string }[] | null = null;
       let note = "";
-      if (backend) {
-        setAlignNote("打开老歌：正在用 AI 语音识别重新对齐…");
-        const timings = await wordAlign(backend, f, {
-          lines: stored.lines.map((l) => ({ time: 0, text: l.text })),
-          duration,
-          lang: stored.meta?.lang,
-          model: "base",
-          escalate: true,
-        }, (stage, progress) => {
-          setAlignNote(`AI 语音对齐：${stage} ${Math.round(progress * 100)}%`);
-        });
-        if (timings && timings.lines && timings.matchRatio > 0.3) {
-          healed = stored.lines.map((l, i) => {
-            const tl = timings.lines.find((x) => x.i === i) ?? timings.lines[i];
-            if (!tl) return l;
-            const wordStart = tl.w?.length ? tl.w[0][0] : null;
-            const time = wordStart ?? (tl.s + (timings.offset ?? 0));
-            const words = tl.w?.length ? tl.w.map(([s, e, t]) => ({ s, e, t: /[\s,.!?;:]$/.test(t) ? t : t + " " })) : undefined;
-            return time >= 0 ? { ...l, time, words } : l;
-          });
-          note = `AI 语音对齐完成（匹配率 ${(timings.matchRatio * 100).toFixed(0)}%）`;
+
+      /* 优先用浏览器内 ASR（和上传流程 finalize 一致）：跳过开头讲话/旁白/前奏，
+         定位原唱开唱点整体平移。不依赖 Python 后端（静态站没有）。 */
+      if (typeof transcribeAudio === "function") {
+        setAlignNote("打开老歌：正在用 AI 语音识别重新对齐（约 1-3 分钟）…");
+        const storedLrc = exportLRC(meta.title, meta.artist, meta.album, stored.lines);
+        /* forcedLang 按歌词内容检测（云端条目 lang 字段可能错存，如 Dai Dai 被存成 zh） */
+        const lyricLang = detectLanguage(storedLrc.replace(/\[\d{1,2}:\d{2}(?:[.:]\d{1,3})?\]/g, " ")) ?? stored.meta?.lang ?? undefined;
+        const asrRes = await transcribeAudio(buffer, 180, (m) => setAlignNote(`AI 语音对齐：${m}`), lyricLang);
+        if (asrRes?.text && asrRes.segments?.length) {
+          const hit = findSingingStart(asrRes.segments, storedLrc);
+          if (hit) {
+            const offset = hit.start - hit.lrcTime;
+            if (Math.abs(offset) > 0.3) {
+              healed = stored.lines.map((l) => ({ ...l, time: Math.max(0, l.time + offset) }));
+              note = `已定位原唱开唱 ${Math.round(hit.start)}s（已跳过开头讲话/前奏），时间轴整体对齐`;
+            }
+          }
         }
       }
+
       /* fallback 到旧声学方案 */
       if (!healed) {
         const res = autoAlign(stored.lines, ons, duration);
