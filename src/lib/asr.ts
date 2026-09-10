@@ -27,7 +27,7 @@ function initASREnv() {
   }
 }
 
-export type ASRSegment = { start: number; end: number; text: string };
+export type ASRSegment = { start: number; end: number; text: string; words?: { start: number; end: number; word: string }[] };
 export type ASRResult = { text: string; segments: ASRSegment[] };
 
 /** 加载 Whisper（幂等，可并发安全） */
@@ -102,6 +102,9 @@ export async function transcribeAudio(
   }>;
   onProgress?.("正在识别唱词…");
   const audio = to16kMono(buffer, maxSeconds);
+  /* chunk_length_s=30：whisper 识别质量最好（带伴奏西语尤其明显），
+     段文本长、歌词词集中，开唱点匹配最稳。前奏/讲话段靠 findSingingStart 的
+     重复检测跳过（"We are ready"×N 这类同词机械重复不算歌词）。 */
   const baseOpts = { return_timestamps: true, chunk_length_s: 30, stride_length_s: 5, temperature: 0 };
   /* 用户明确选了歌曲语言（非自动检测）→ 直接强制该语言转录，
      避免 whisper 对带伴奏的西语歌误判成英文（Sofia → "I'm not today…"） */
@@ -121,12 +124,21 @@ export async function transcribeAudio(
 
   const chunks = out?.chunks || [];
   const segments: ASRSegment[] = chunks
-    .filter((c) => c?.timestamp && Array.isArray(c.timestamp) && c.timestamp[0] != null && c.text?.trim() && !isDescriptionOnly(c.text!))
-    .map((c) => ({
-      start: Math.max(0, c.timestamp![0] ?? 0),
-      end: c.timestamp![1] ?? 0,
-      text: c.text!.trim(),
-    }));
+    .filter((c) => c?.text?.trim() && !isDescriptionOnly(c.text!))
+    .map((c) => {
+      const words = Array.isArray((c as { words?: unknown }).words)
+        ? ((c as { words: { word?: string; start?: number; end?: number }[] }).words)
+            .filter((w) => w && w.word && w.start != null)
+            .map((w) => ({ start: w.start as number, end: (w.end ?? w.start) as number, word: w.word as string }))
+        : undefined;
+      const ts = Array.isArray(c.timestamp) ? c.timestamp : null;
+      return {
+        start: Math.max(0, ts?.[0] ?? words?.[0]?.start ?? 0),
+        end: ts?.[1] ?? words?.[words.length - 1]?.end ?? words?.[0]?.start ?? 0,
+        text: c.text!.trim(),
+        words,
+      };
+    });
   return { text, segments };
 }
 
@@ -257,12 +269,62 @@ export function pickSearchPhrase(asrText: string): string {
   return norm[0] || asrText.trim().split(/\s+/).slice(0, 8).join(" ");
 }
 
+/**
+ * 歌唱起始检测：视频/音频开头常有主播讲话、旁白或纯前奏（如 "We are ready" 重复几十遍），
+ * whisper 会把它转写出来但完全不是歌词。用歌词逐行扫 ASR 段，
+ * 找到第一个与某行歌词重叠的段 → 它的 start 就是「原唱开唱点」，
+ * lrcTime 是匹配上的那行歌词在 LRC 里的原始时间戳（finalize 用它做对齐锚点，
+ * 该行对齐到开唱点，其余行按 LRC 相对差顺延）。
+ * @returns { start, lrcTime } 或 null（歌词太靠后或语音过杂）
+ */
+export function findSingingStart(segments: ASRSegment[], lyricText: string): { start: number; lrcTime: number } | null {
+  const rawLines = lyricText.split("\n");
+  const lines = rawLines
+    .map((l) => {
+      const m = /\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]/.exec(l);
+      const time = m ? +m[1] * 60 + +m[2] + +(m[3] || 0) / 1000 : 0;
+      const words = normLyric(l.replace(/\[\d{1,2}:\d{2}(?:[.:]\d{1,3})?\]/g, " ")).split(" ").filter(Boolean);
+      return { time, words };
+    })
+    .filter((x) => x.words.length >= 2);
+  if (!lines.length || !segments?.length) return null;
+  for (const sg of segments) {
+    if (sg.end - sg.start > 32) continue; /* 超长段（讲话+歌曲挤一起）不参与定位 */
+    const segWords = normLyric(sg.text || "").split(" ").filter(Boolean);
+    if (segWords.length < 2) continue;
+    /* 讲话/旁白特征：同一词机械重复多次（如 "We are ready"×100、段尾还会带出歌曲开头）
+       导致误定位到讲话段——真实歌词段不会同词出现 8 次以上 */
+    const freq: Record<string, number> = {};
+    let maxFreq = 0;
+    for (const w of segWords) {
+      freq[w] = (freq[w] || 0) + 1;
+      if (freq[w] > maxFreq) maxFreq = freq[w];
+    }
+    if (maxFreq >= 8) continue;
+    for (let i = 0; i < lines.length; i++) {
+      const lineWords = lines[i].words;
+      let hit = 0;
+      for (const w of segWords) if (lineWords.includes(w)) hit++;
+      const ratio = hit / lineWords.length;
+      if (ratio >= 0.25 && hit >= 2) return { start: sg.start, lrcTime: lines[i].time };
+    }
+  }
+  return null;
+}
+
+/** 把 ASR 段里从 startSec 开始的部分拼接成文本（用于跳过讲话/前奏） */
+export function asrTailFrom(segments: ASRSegment[], startSec: number): { text: string; segments: ASRSegment[] } {
+  const tail = segments.filter((s) => s.start >= startSec - 0.5);
+  return { text: tail.map((s) => s.text).join(" ").trim(), segments: tail };
+}
+
 /* 调试钩子：生产页面里 window.__asr.transcribeAudio(...) 直接调用 */
 if (typeof window !== "undefined") {
-  (window as unknown as { __asr?: { loadASR: typeof loadASR; transcribeAudio: typeof transcribeAudio; bestLyricSimilarity: typeof bestLyricSimilarity; normLyric: typeof normLyric } }).__asr = {
+  (window as unknown as { __asr?: { loadASR: typeof loadASR; transcribeAudio: typeof transcribeAudio; bestLyricSimilarity: typeof bestLyricSimilarity; normLyric: typeof normLyric; findSingingStart: typeof findSingingStart } }).__asr = {
     loadASR,
     transcribeAudio,
     bestLyricSimilarity,
     normLyric,
+    findSingingStart,
   };
 }

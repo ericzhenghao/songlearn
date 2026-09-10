@@ -31,7 +31,7 @@ import {
   type GlobalSong,
 } from "./lib/globalLib";
 import { identifyFromFile } from "./lib/metainfo";
-import { bestLyricSimilarity, pickSearchPhrase, transcribeAudio } from "./lib/asr";
+import { asrTailFrom, bestLyricSimilarity, findSingingStart, pickSearchPhrase, transcribeAudio } from "./lib/asr";
 import { deleteSong, findByTitleArtist, listSongs, newId, putSong, updateSong, type SongRecord } from "./lib/songdb";
 import { probeBackend, wordAlign } from "./lib/backend";
 import type { Timings } from "./lib/lrc";
@@ -256,7 +256,9 @@ export default function App() {
     detected: string | null,
     f: File | null,
     duration: number,
-    ons: OnsetInfo | null
+    ons: OnsetInfo | null,
+    startSec?: number | null,
+    anchorLrc = 0
   ) {
     setSong({ title: hitTitle, artist: hitArtist, album, lang: detected ?? "", year: "" });
     setDetectedLang(detected);
@@ -282,6 +284,19 @@ export default function App() {
     await wait(500);
 
     let finalLines = lines;
+    let startApplied = false;
+
+    /* 歌唱起始点（ASR 匹配歌词得出）：视频/音频开头常有主播讲话、旁白或纯前奏，
+       歌词 LRC 时间戳是相对歌曲本身的，要整体平移到「原唱开唱」位置。
+       anchorLrc 是匹配上的那行歌词在 LRC 里的时间：该行对齐到开唱点，其余行按相对差顺延 */
+    if (startSec != null) {
+      const offset = startSec - anchorLrc;
+      if (Math.abs(offset) > 0.3) {
+        finalLines = lines.map((l) => ({ ...l, time: Math.max(0, l.time + offset) }));
+        setAlignNote(`已定位原唱开唱 ${Math.round(startSec)}s（已跳过开头讲话/前奏），歌词时间轴整体对齐`);
+        startApplied = true;
+      }
+    }
 
     /* ---- 优先用 ASR 后端对齐 ----
        Whisper 把音频里实际唱的内容转成文字+词级时间戳，
@@ -291,7 +306,7 @@ export default function App() {
        歌词自然不会在这些区段开始。 */
     const backend = await probeBackend();
     let asrDone = false;
-    if (backend && f) {
+    if (!startApplied && backend && f) {
       setAlignNote("正在用 AI 语音识别对齐歌词…");
       const timings = await wordAlign(backend, f, {
         /* time 全设为 0：lrclib 原始时间戳可能来自不同版本，
@@ -329,7 +344,7 @@ export default function App() {
       }
     }
     /* fallback：后端不存活或 ASR 对齐失败 → 旧的声学特征方案 */
-    if (!asrDone && ons) {
+    if (!startApplied && !asrDone && ons) {
       const res = autoAlign(lines, ons, duration);
       finalLines = res.lines;
       setAlignNote(
@@ -518,7 +533,7 @@ export default function App() {
       setRecogNote("语音识别：Whisper 正在听唱词…（首次需加载约 40MB 模型，之后秒开）");
       let asr: Awaited<ReturnType<typeof transcribeAudio>> | null = null;
       try {
-        asr = await transcribeAudio(buffer, 90, (m) => setRecogNote(`语音识别：${m}`), songLang === "auto" ? undefined : songLang);
+        asr = await transcribeAudio(buffer, 180, (m) => setRecogNote(`语音识别：${m}`), songLang === "auto" ? undefined : songLang);
       } catch (e) {
         console.error("[ASR]", e);
         const em = String((e as Error)?.message || e).slice(0, 200);
@@ -535,16 +550,26 @@ export default function App() {
         let bTitle = "";
         let bArtist = "未知艺人";
         let bHit = false;
+        let bStart: number | null = null;
+        let bStartLrc = 0;
+        /* 每个候选：先用歌词逐行扫 ASR 段找「原唱开唱点」（跳过开头主播讲话/旁白/纯前奏），
+           再用开唱点之后的 ASR 文本打分——否则 "We are ready"×N 这类开场白会把所有歌的分数稀释到 0 */
         const remember = (found: FoundLyrics, t: string, a: string) => {
-          const s = asrRes?.text ? bestLyricSimilarity(asrRes.text, found.text) : 0;
+          const hit = findSingingStart(asrRes.segments, found.text);
+          const T0 = hit?.start ?? null;
+          const tail = T0 != null ? asrTailFrom(asrRes.segments, T0) : null;
+          const asrForScore = tail?.text || asrRes.text;
+          const s = asrRes?.text ? bestLyricSimilarity(asrForScore, found.text) : 0;
           const dbg = (window as unknown as { __dbg?: Record<string, unknown> }).__dbg || {};
-          dbg.scores = [...((dbg.scores as { t: string; s: number; via: string }[]) || []), { t, s: Number(s.toFixed(3)), via: found.via }];
+          dbg.scores = [...((dbg.scores as { t: string; s: number; via: string; start?: number | null }[]) || []), { t, s: Number(s.toFixed(3)), via: found.via, start: T0 }];
           (window as unknown as { __dbg?: Record<string, unknown> }).__dbg = dbg;
           if (s > bScore) {
             bScore = s;
             bFound = found;
             bTitle = t;
             bArtist = a || "未知艺人";
+            bStart = T0;
+            bStartLrc = hit?.lrcTime ?? 0;
           }
         };
         if (asrRes?.text) {
@@ -569,6 +594,7 @@ export default function App() {
                 artistName: lib.artist,
                 matchedLang: lib.lang || detectLanguage(lib.lrc) || null,
                 langMismatch: false,
+                alternatives: [],
               },
               lib.title,
               lib.artist
@@ -579,16 +605,28 @@ export default function App() {
           /* 内置没命中，才用云端/本地已有歌（可能是用户之前上传的歌，二次学习直接命中） */
           if (!bHit) {
             for (const lib of merged) {
-              if (builtinLrcs.has(lib.lrc || "") || !lib.lrc) continue;
+              if (builtinLrcs.has(lib.lrc || "")) continue;
+              /* 云端条目歌词存在 Storage 直链（lrcUrl）而非内联，读取时拉取文本 */
+              let lrcText = lib.lrc || "";
+              if (!lrcText && lib.lrcUrl) {
+                try {
+                  const res = await fetch(lib.lrcUrl);
+                  if (res.ok) lrcText = await res.text();
+                } catch (e) {
+                  console.error("[LRC-FETCH]", lib.title, e);
+                }
+              }
+              if (!lrcText) continue;
               remember(
                 {
-                  text: lib.lrc,
+                  text: lrcText,
                   synced: true,
                   via: "曲库 · 已有",
                   trackName: lib.title,
                   artistName: lib.artist,
-                  matchedLang: lib.lang || detectLanguage(lib.lrc) || null,
+                  matchedLang: lib.lang || detectLanguage(lrcText) || null,
                   langMismatch: false,
+                  alternatives: [],
                 },
                 lib.title,
                 lib.artist
@@ -630,20 +668,26 @@ export default function App() {
             }
           }
         }
-        return { bestFound: bFound, bestScore: bScore, bestTitle: bTitle, bestArtist: bArtist, builtinHit: bHit };
+        return { bestFound: bFound, bestScore: bScore, bestTitle: bTitle, bestArtist: bArtist, builtinHit: bHit, singingStart: bStart, singingLrc: bStartLrc };
       };
 
       let scored = asr?.text
         ? await runScoring(asr)
-        : { bestFound: null as FoundLyrics | null, bestScore: 0, bestTitle: "", bestArtist: "未知艺人", builtinHit: false };
-      /* auto 模式且内置没命中：带伴奏的西语歌常被 whisper 误判成英文（如 Sofia → "I'm not today…"）。
-         内置曲库 4 首里有 3 首西语，强制西语再转录一次，匹配更好则替换。 */
-      if (songLang === "auto" && !scored.builtinHit) {
+        : { bestFound: null as FoundLyrics | null, bestScore: 0, bestTitle: "", bestArtist: "未知艺人", builtinHit: false, singingStart: null as number | null, singingLrc: 0 };
+      /* auto 模式且内置没命中：带伴奏的西语歌常被 whisper 误判成英文（如 Sofia → "I'm not today…"、
+         Despacito → "You are the human…"），还可能被其它英文歌（Dai Dai）误匹配抢先。
+         内置曲库 4 首里有 3 首西语，强制西语再转录一次，匹配更好则替换。
+         主转录已是西语（detectedLang 为 es）就跳过，避免每次都白等 3 分钟。 */
+      const mainLang = asr?.text ? detectLanguage(asr.text) : null;
+      if (songLang === "auto" && !scored.builtinHit && mainLang !== "es") {
         try {
-          const asrEs = await transcribeAudio(buffer, 90, (m) => setRecogNote(`语音识别：${m}`), "es");
+          const asrEs = await transcribeAudio(buffer, 180, (m) => setRecogNote(`语音识别：${m}`), "es");
           if (asrEs.text && asrEs.text !== asr?.text) {
             const scoredEs = await runScoring(asrEs);
-            if (scoredEs.bestScore > scored.bestScore) {
+            /* es 兜底是专门为"西语歌被误判成英文"纠偏的：它命中内置西语校准版
+               （如 Despacito/Sofia）的可靠性，高于主转录误匹配到的其它歌
+               （如 Despacito 音频误配到 Dai Dai 0.35）。内置命中优先；否则比分数。 */
+            if ((scoredEs.builtinHit && !scored.builtinHit) || scoredEs.bestScore > scored.bestScore) {
               scored = scoredEs;
               asr = asrEs;
             }
@@ -652,7 +696,7 @@ export default function App() {
           console.error("[ASR-ES]", e);
         }
       }
-      const { bestFound, bestScore, bestTitle, bestArtist, builtinHit } = scored;
+      const { bestFound, bestScore, bestTitle, bestArtist, builtinHit, singingStart, singingLrc } = scored;
 
       if (bestFound && bestScore >= (bestFound.via === "内置曲库 · 已校准" ? 0.25 : 0.3)) {
         setStage("lyrics");
@@ -668,10 +712,16 @@ export default function App() {
         setRecogNote(
           `语音识别命中《${bestFound.trackName}》（${langLabel(bestFound.matchedLang)}）· 匹配度 ${Math.round(bestScore * 100)}% · ${bestFound.via}${
             bestFound.synced ? "（带时间戳，对齐更准）" : "（纯文本，按人声段估算）"
-          }`
+          }${singingStart != null ? ` · 已定位原唱开唱 ${Math.round(singingStart)}s` : ""}`
         );
         const detected = detectLanguage(bestFound.text) ?? null;
-        await finalize(bestTitle, bestArtist, undefined, bestFound.text, detected, f, duration, onsetsRes);
+        /* 内置校准版（人工逐句对齐）命中：保持校准时间戳，绝不被 ASR 开唱点平移破坏。
+           只有非内置（云端/在线，如 Dai Dai）才用 findSingingStart 的开唱点整体对齐。 */
+        if (bestFound.via === "内置曲库 · 已校准") {
+          await finalize(bestTitle, bestArtist, undefined, bestFound.text, detected, f, duration, onsetsRes);
+        } else {
+          await finalize(bestTitle, bestArtist, undefined, bestFound.text, detected, f, duration, onsetsRes, singingStart, singingLrc);
+        }
         return;
       }
 
@@ -683,15 +733,19 @@ export default function App() {
           const ms = Math.round((t - Math.floor(t)) * 100);
           return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(ms).padStart(2, "0")}`;
         };
-        const lrcText = asr.segments.map((sg) => `[${fmt(sg.start)}]${sg.text}`).join("\n");
+        /* 保底也用开唱点：跳过开头讲话/前奏段，从原唱开唱处开始生成歌词 */
+        const tail = singingStart != null ? asrTailFrom(asr.segments, singingStart) : null;
+        const baseSegs = tail?.segments?.length ? tail.segments : asr.segments;
+        const lrcText = baseSegs.map((sg) => `[${fmt(sg.start)}]${sg.text}`).join("\n");
         setStage("lyrics");
         setLyricLang(null);
-        setRecogNote(`歌词库未匹配到该歌，已用语音识别结果直接生成歌词（${asr.segments.length} 句，带时间戳）。歌名若已知可在学唱页修正。`);
+        setRecogNote(
+          `歌词库未匹配到该歌，已用语音识别结果直接生成歌词（${baseSegs.length} 句，带时间戳）${singingStart != null ? `，已跳过开场 ${Math.round(singingStart)}s 的讲话/前奏` : ""}。歌名若已知可在学唱页修正。`
+        );
         setLyricWarning(null);
-        const detected = detectLanguage(asr.text) ?? null;
-        await finalize(bestTitle || "识别歌曲", bestArtist, undefined, lrcText, detected, f, duration, onsetsRes);
-        return;
-      }
+        const detected = detectLanguage(tail?.text || asr.text) ?? null;
+        await finalize(bestTitle || "识别歌曲", bestArtist, undefined, lrcText, detected, f, duration, onsetsRes, singingStart, 0);
+        return;      }
 
       /* 全失败：让用户手动指定歌名（不依赖任何外部识别服务） */
       setFailReason(
