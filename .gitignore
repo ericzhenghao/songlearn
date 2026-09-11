@@ -38,13 +38,3 @@ _sep/
 _*.py
 _*.log
 _*.json
-
-# ASR model & ort runtime (hosted on Netlify; excluded from GitHub)
-public/models/
-public/ort/
-
-# ASR model & ort runtime (hosted on Netlify; excluded from GitHub)
-public/models/
-public/ort/
-dai_dai.mp3
-dai_dai.lrc

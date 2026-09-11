@@ -3,9 +3,6 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
-  /* GitHub Pages 部署在 /songlearn/ 子路径；Netlify/Vercel/本地用根路径。
-     GITHUB_ACTIONS=true 仅在 gh-pages workflow 里存在，Netlify 构建不受影响 */
-  base: process.env.GITHUB_ACTIONS === "true" ? "/songlearn/" : "/",
   plugins: [react(), tailwindcss()],
   server: {
     host: "0.0.0.0",

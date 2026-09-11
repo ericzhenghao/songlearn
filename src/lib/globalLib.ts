@@ -386,28 +386,12 @@ export function hostAudio(
 }
 
 /** 从直链把音频拉回本地成 File（别人打开你的歌时） */
-export async function fetchAudio(url: string, onProgress?: (pct: number) => void): Promise<File> {
+export async function fetchAudio(url: string): Promise<File> {
   const res = await fetch(url, { signal: timeoutSignal(120000) });
   if (!res.ok) throw new Error(`音频下载失败（HTTP ${res.status}）`);
-  const total = Number(res.headers.get("content-length") || 0);
+  const blob = await res.blob();
   const name = decodeURIComponent(url.split("/").pop() || "audio.mp3");
-  const ctype = res.headers.get("content-type") || "audio/mpeg";
-  if (!res.body || !total) {
-    const blob = await res.blob();
-    return new File([blob], name, { type: blob.type || ctype });
-  }
-  const reader = res.body.getReader();
-  const chunks: BlobPart[] = [];
-  let received = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    received += value.length;
-    onProgress?.(Math.min(99, Math.round((received / total) * 100)));
-  }
-  const blob = new Blob(chunks, { type: ctype });
-  return new File([blob], name, { type: blob.type || ctype });
+  return new File([blob], name, { type: blob.type || "audio/mpeg" });
 }
 
 /** 从直链拉歌词文本（索引里只存链接，正文在这） */
