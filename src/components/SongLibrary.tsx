@@ -30,6 +30,7 @@ export default function SongLibrary({
   onCreateLib,
   onCopyLink,
   onRefreshLib,
+  openPct,
 }: {
   open: boolean;
   onClose: () => void;
@@ -39,6 +40,7 @@ export default function SongLibrary({
   onExport: () => void;
   onImport: (f: File) => void;
   openingId?: string | null;
+  openPct?: number | null;
   libId?: string | null;
   libError?: string | null;
   creatingLib?: boolean;
@@ -279,7 +281,11 @@ export default function SongLibrary({
                           disabled={openingId === s.id}
                           className="rounded-md bg-amber px-3 py-1.5 font-display text-xs text-ink-950 transition-all enabled:hover:scale-105 enabled:active:scale-95 disabled:opacity-60"
                         >
-                          {openingId === s.id ? "打开中…" : "学唱"}
+                          {openingId === s.id
+                            ? openPct != null
+                              ? `下载音频 ${openPct}%`
+                              : "打开中…"
+                            : "学唱"}
                         </button>
                         <button
                           onClick={() => onDelete(s)}
