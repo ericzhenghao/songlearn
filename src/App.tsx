@@ -139,6 +139,7 @@ export default function App() {
   const [globalSongs, setGlobalSongs] = useState<LibrarySong[]>([]);
   const [localSongs, setLocalSongs] = useState<SongRecord[]>([]);
   const [openingId, setOpeningId] = useState<string | null>(null);
+  const [openPct, setOpenPct] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
   const [currentId, setCurrentId] = useState<string | null>(null);
   /* 视频画面收起/展开（提升到页面顶部信息区，让"显示视频"在歌名行可见） */
@@ -794,18 +795,35 @@ export default function App() {
         }
       }
       if (!f && s.audioUrl) {
-        f = await fetchAudio(s.audioUrl);
+        f = await fetchAudio(s.audioUrl, (pct) => setOpenPct(pct));
       }
       if (!f) {
         showToast(`《${s.title}》暂时只有歌词 —— 上传同名音频即可学唱`);
         return;
       }
       /* 歌词：本地内联优先，否则从永久直链拉全文 */
-      let lrcText = s.lrc && s.lrc.trim() ? s.lrc : null;
+      /* 云端条目：歌词以服务端 lrcUrl 为准（本地内联可能是旧缓存/ASR 污染的垃圾），
+         本地上传的歌（无 cloudSource）才用本地内联歌词 */
+      let lrcText = s.cloudSource && s.lrcUrl ? null : (s.lrc && s.lrc.trim() ? s.lrc : null);
       if (!lrcText && s.lrcUrl) lrcText = await fetchText(s.lrcUrl);
       if (!lrcText) {
         showToast(`《${s.title}》的歌词拉取失败，请重试`);
         return;
+      }
+      /* 云端直链下载的音频 → 缓存进本地曲库，下次打开秒开（不用再拉 42MB 直链） */
+      if (s.id && !s.fileBlob && f && f.size > 0 && s.audioUrl) {
+        try {
+          const rec: SongRecord = {
+            id: s.id, title: s.title, artist: s.artist, album: s.album,
+            lang: s.lang ?? null, fileName: f.name, mime: f.type, fileBlob: f,
+            source: "import", duration: s.duration || 0, lrc: lrcText,
+            mastered: s.mastered ?? [], addedAt: Date.now(), size: f.size,
+          };
+          await putSong(rec);
+          void refreshLocal();
+        } catch {
+          /* 缓存失败不影响本次打开 */
+        }
       }
       clock?.destroy?.();
       const mc = new MediaFileClock(f);
@@ -841,6 +859,7 @@ export default function App() {
       showToast(e instanceof Error ? e.message : "打开歌曲失败");
     } finally {
       setOpeningId(null);
+      setOpenPct(null);
     }
   }
 
@@ -1186,6 +1205,7 @@ export default function App() {
         onExport={() => void handleExport()}
         onImport={(f) => void handleImport(f)}
         openingId={openingId}
+        openPct={openPct}
         libId={libId}
         libError={libError}
         creatingLib={creatingLib}

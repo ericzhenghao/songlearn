@@ -179,6 +179,11 @@ export function mergeLibrary(
        基本就是同一首歌版本；本地记录只保留音频（fileBlob）、掌握进度等。
        用户上传的全新歌（prev 不存在）走本地自己对齐的歌词。 */
     const keepCalibrated = prev?.alignV === 2;
+    /* 云端条目（cloudSource）的歌词是服务端最新版，优先于本地旧缓存 */
+    const useCloudLrc = !!prev?.cloudSource && !!prev.lrc;
+    /* 云端条目歌词在 lrcUrl 直链上（本地内联可能是 ASR 污染的垃圾如 "[MUSIC] …"），
+       打开歌曲时一律走服务端全文，不继承本地旧缓存歌词 */
+    const cloudLrcByUrl = !!prev?.cloudSource && !!prev.lrcUrl;
     /* 并入校准版的条目，key 也统一到校准版标题下，避免旧变体标题重复占一行 */
     const targetKey = keepCalibrated && prev ? keyOf(prev.title, prev.artist) : k;
     map.set(targetKey, {
@@ -189,7 +194,7 @@ export function mergeLibrary(
       artist: keepCalibrated ? prev?.artist ?? s.artist : s.artist,
       lang: keepCalibrated ? prev?.lang ?? s.lang : s.lang,
       source: "local",
-      lrc: keepCalibrated ? prev.lrc : s.lrc || prev?.lrc || "",
+      lrc: cloudLrcByUrl ? "" : (keepCalibrated ? prev.lrc : useCloudLrc ? prev.lrc : s.lrc || prev?.lrc || ""),
       alignV: keepCalibrated ? 2 : s.alignV ?? prev?.alignV,
       /* 云端热度/上传者随同名歌一起继承 */
       plays: prev?.plays ?? s.plays,
